@@ -196,6 +196,10 @@ const MIGRATION_STATEMENTS: string[] = [
   // ═══════════ WebDAV 虚拟目录 ═══════════
   "ALTER TABLE files ADD COLUMN path TEXT NOT NULL DEFAULT '/'",
   "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
+  // ═══════════ 管理页文件夹（平铺单层，独立于 WebDAV 的 path/directories） ═══════════
+  "CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)",
+  "ALTER TABLE files ADD COLUMN folder_id TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id)",
 ];
 
 /**

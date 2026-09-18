@@ -344,6 +344,10 @@ const I18N = {
     dropTitle: '拖拽文件到此处，或点击上传',
     dropDesc: '单文件最大 100 MB（Workers 请求限制）· 直传 R2 对象存储',
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', del: '删除',
+    newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
+    folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
+    uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除文件夹「{name}」？其中的文件将移回根目录，不会被删除。',
+    folderDeleted: '文件夹已删除', folderCreatedToast: '已创建文件夹「{name}」',
     tooLarge: '「{name}」超过 100 MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
     // 分享弹窗
@@ -632,6 +636,10 @@ const I18N = {
     dropTitle: 'Drop files here or click to upload',
     dropDesc: 'Max 100 MB per file (Workers limit) · Stored directly in R2',
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', del: 'Delete',
+    newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
+    folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
+    uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete folder "{name}"? Files inside will be moved back to Root, not deleted.',
+    folderDeleted: 'Folder deleted', folderCreatedToast: 'Folder "{name}" created',
     tooLarge: '"{name}" exceeds the 100 MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
     // 分享弹窗
@@ -1262,9 +1270,27 @@ async function loadOverview(){
 }
 
 /* ═══════════ 文件 ═══════════ */
+let filesFolder = null; // null=全部 | 'root'=根目录 | 其他=文件夹 id
+
 async function loadFiles(){
-  const { files } = await api('/api/admin/files');
+  let folders = [];
+  try { ({ folders } = await api('/api/admin/folders')); } catch {}
+  const q = filesFolder ? `?folder=${encodeURIComponent(filesFolder)}` : '';
+  const { files } = await api('/api/admin/files' + q);
+  const fmap = Object.fromEntries(folders.map(f => [f.id, f.name]));
+  const targetName = (filesFolder && filesFolder !== 'root' && fmap[filesFolder]) ? fmap[filesFolder] : t('uploadToRoot');
+  const viewName = filesFolder === 'root' ? t('folderFilterRoot') : (filesFolder && fmap[filesFolder]) ? `📁 ${fmap[filesFolder]}` : t('folderFilterAll');
   $('#view').innerHTML = `
+    <div class="glass section" style="padding:14px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn sm primary" id="fo-new">📁 ${esc(t('newFolder'))}</button>
+      <select id="fo-filter" style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+        <option value="">${esc(t('folderFilterAll'))}</option>
+        <option value="root">${esc(t('folderFilterRoot'))}</option>
+        ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(f.name)}（${f.file_count}）</option>`).join('')}
+      </select>
+      ${fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
+      <span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>
+    </div>
     <div class="dropzone" id="dropzone">
       <div class="icon">☁️</div>
       <div class="t">${esc(t('dropTitle'))}</div>
@@ -1273,14 +1299,15 @@ async function loadFiles(){
     </div>
     <div id="upload-list"></div>
     <div class="glass section">
-      <div class="section-title"><h2>📁 ${esc(t('allFiles'))}（${files.length}）</h2></div>
+      <div class="section-title"><h2>📁 ${esc(viewName)}（${files.length}）</h2></div>
       ${files.length ? `
       <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colFolder'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
             <td>${ficon(f.name)}</td>
             <td class="name-cell" title="${esc(f.name)}">${esc(f.name)}</td>
+            <td>${f.folder_id && fmap[f.folder_id] ? `📁 ${esc(fmap[f.folder_id])}` : '—'}</td>
             <td class="num">${fmtSize(f.size)}</td>
             <td class="num">${f.share_count}</td>
             <td class="num">${f.download_count}</td>
@@ -1293,6 +1320,20 @@ async function loadFiles(){
         </tbody>
       </table></div>` : `<div class="empty"><div class="icon">📭</div>${esc(t('noFiles'))}</div>`}
     </div>`;
+
+  const sel = $('#fo-filter');
+  sel.value = filesFolder || '';
+  sel.onchange = () => { filesFolder = sel.value || null; loadFiles(); };
+  $('#fo-new').onclick = openNewFolderModal;
+  const delBtn = $('#fo-del');
+  if(delBtn) delBtn.onclick = async () => {
+    const name = fmap[filesFolder] || '';
+    if(!(await confirmDialog(t('deleteFolderT'), t('deleteFolderD', {name})))) return;
+    await api(`/api/admin/folders/${encodeURIComponent(filesFolder)}`, { method:'DELETE' });
+    toast(t('folderDeleted'));
+    filesFolder = null;
+    loadFiles();
+  };
 
   const dz = $('#dropzone'), fi = $('#file-input');
   dz.onclick = () => fi.click();
@@ -1310,6 +1351,33 @@ async function loadFiles(){
   });
 }
 
+function openNewFolderModal(){
+  openModal(`
+    <h3>${esc(t('newFolder'))}</h3>
+    <div class="sub">${esc(t('folderNamePh'))}</div>
+    <div class="field"><input type="text" id="fo-name" placeholder="${esc(t('folderNamePh'))}" autocomplete="off" maxlength="60"></div>
+    <div class="actions">
+      <button class="btn" data-x>${esc(t('cancel'))}</button>
+      <button class="btn primary" data-ok>${esc(t('confirm'))}</button>
+    </div>`);
+  const inp = $('#fo-name');
+  inp.focus();
+  const submit = async () => {
+    const name = inp.value.trim();
+    if(!name){ toast(t('folderNameEmpty'), 'err'); return; }
+    try {
+      const r = await api('/api/admin/folders', { method:'POST', body: JSON.stringify({ name }) });
+      toast(t('folderCreatedToast', { name: r.name }));
+      closeModal();
+      filesFolder = r.id;
+      loadFiles();
+    } catch(e){ toast(e.message, 'err'); }
+  };
+  $('[data-ok]').onclick = submit;
+  $('[data-x]').onclick = closeModal;
+  inp.onkeydown = e => { if(e.key === 'Enter') submit(); };
+}
+
 function uploadFiles(files){
   for(const file of files){
     if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name: file.name}), 'err'); continue; }
@@ -1321,6 +1389,7 @@ function uploadFiles(files){
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    if(filesFolder && filesFolder !== 'root') xhr.setRequestHeader('X-Folder-Id', filesFolder);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = e => {
       const pct = Math.round(e.loaded / e.total * 100);

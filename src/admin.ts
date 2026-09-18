@@ -294,14 +294,59 @@ export async function handleAdminApi(
     });
   }
 
+  // ── 文件夹：列表 ──────────────────────────────────
+  if (path === "/api/admin/folders" && method === "GET") {
+    const { results } = await env.db.prepare(
+      `SELECT fo.id, fo.name, fo.created_at,
+              (SELECT COUNT(*) FROM files fl WHERE fl.folder_id = fo.id) AS file_count,
+              (SELECT COALESCE(SUM(fl.size), 0) FROM files fl WHERE fl.folder_id = fo.id) AS total_size
+       FROM folders fo ORDER BY fo.created_at DESC`
+    ).all();
+    return json({ folders: results ?? [] });
+  }
+
+  // ── 文件夹：创建 ──────────────────────────────────
+  if (path === "/api/admin/folders" && method === "POST") {
+    const body = await req.json().catch(() => null) as { name?: string } | null;
+    const raw = (body?.name ?? "").trim();
+    if (!raw) return json({ error: msg(req, "文件夹名不能为空", "Folder name is required") }, 400);
+    const name = sanitizeName(raw);
+    try {
+      const id = randomId(10);
+      await env.db.prepare("INSERT INTO folders(id, name, created_at) VALUES(?1, ?2, ?3)")
+        .bind(id, name, Date.now()).run();
+      return json({ ok: true, id, name }, 201);
+    } catch {
+      return json({ error: msg(req, "同名文件夹已存在", "A folder with this name already exists") }, 409);
+    }
+  }
+
+  // ── 文件夹：删除（文件移回根目录，不删文件） ────────
+  const folderMatch = /^\/api\/admin\/folders\/([^/]+)$/.exec(path);
+  if (folderMatch && method === "DELETE") {
+    const folderId = decodeURIComponent(folderMatch[1]);
+    const folder = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(folderId).first();
+    if (!folder) return json({ error: msg(req, "文件夹不存在", "Folder not found") }, 404);
+    await env.db.batch([
+      env.db.prepare("UPDATE files SET folder_id = NULL WHERE folder_id = ?1").bind(folderId),
+      env.db.prepare("DELETE FROM folders WHERE id = ?1").bind(folderId),
+    ]);
+    return json({ ok: true });
+  }
+
   // ── 文件列表 ──────────────────────────────────────
   if (path === "/api/admin/files" && method === "GET") {
-    const { results } = await env.db.prepare(
-      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at,
+    const folder = new URL(req.url).searchParams.get("folder"); // null=全部 | "root"=根目录 | 其他=文件夹 id
+    let where = "";
+    if (folder === "root") where = "WHERE f.folder_id IS NULL";
+    else if (folder) where = "WHERE f.folder_id = ?1";
+    const stmt = env.db.prepare(
+      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.folder_id,
               (SELECT COUNT(*) FROM shares s WHERE s.file_id = f.id) AS share_count,
               (SELECT COALESCE(SUM(s.download_count), 0) FROM shares s WHERE s.file_id = f.id) AS download_count
-       FROM files f ORDER BY f.uploaded_at DESC`
-    ).all();
+       FROM files f ${where} ORDER BY f.uploaded_at DESC`
+    );
+    const { results } = folder && folder !== "root" ? await stmt.bind(folder).all() : await stmt.all();
     return json({ files: results ?? [] });
   }
 
@@ -316,6 +361,13 @@ export async function handleAdminApi(
       name = sanitizeName(rawName);
     }
     if (!req.body) return json({ error: msg(req, "请求体为空", "Empty request body") }, 400);
+    const folderRaw = req.headers.get("x-folder-id")?.trim();
+    let folderId: string | null = null;
+    if (folderRaw) {
+      const fo = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(folderRaw).first<{ id: string }>();
+      if (!fo) return json({ error: msg(req, "目标文件夹不存在", "Target folder not found") }, 400);
+      folderId = fo.id;
+    }
     const id = randomId(14);
     const key = `files/${id}`;
     const mime = req.headers.get("content-type") || "application/octet-stream";
@@ -333,9 +385,9 @@ export async function handleAdminApi(
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──
     try {
       await env.db.prepare(
-        "INSERT INTO files(id, key, name, size, mime, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)"
+        "INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
       )
-        .bind(id, key, name, resultSize, mime, Date.now())
+        .bind(id, key, name, resultSize, mime, Date.now(), folderId)
         .run();
     } catch (dbErr) {
       ctx.waitUntil(st.delete(key).catch(() => {}));
