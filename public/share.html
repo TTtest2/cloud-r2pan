@@ -249,7 +249,7 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
 <div class="brand"><span id="brand-text">Powered by <b>cloud-r2pan</b></span><button class="lang-btn" id="lang-toggle"></button></div>
 
 <!-- GitHub Octocat 悬浮 -->
-<a class="octo-float" href="https://github.com/Admin666pro/cloud-r2pan" target="_blank" rel="noopener noreferrer" title="GitHub">
+<a class="octo-float" href="https://github.com/Admin666pro/cloud-oauth2" target="_blank" rel="noopener noreferrer" title="GitHub">
   <!-- Octocat silhouette — GitHub 官方吉祥物 -->
   <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M12 .5C5.73.5.75 5.48.75 11.75c0 4.97 3.22 9.19 7.69 10.68.56.1.77-.24.77-.54 0-.27-.01-1.16-.02-2.11-3.13.68-3.79-1.34-3.79-1.34-.51-1.3-1.25-1.64-1.25-1.64-1.02-.7.08-.68.08-.68 1.13.08 1.72 1.16 1.72 1.16 1 1.71 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.5-.28-5.13-1.25-5.13-5.57 0-1.23.44-2.24 1.16-3.03-.12-.28-.5-1.43.11-2.99 0 0 .95-.3 3.11 1.15.9-.25 1.87-.37 2.83-.37.96 0 1.93.12 2.83.37 2.16-1.45 3.11-1.15 3.11-1.15.61 1.56.23 2.71.11 2.99.72.79 1.16 1.8 1.16 3.03 0 4.33-2.64 5.28-5.14 5.56.4.34.76 1.02.76 2.07 0 1.5-.01 2.71-.01 3.08 0 .3.21.65.78.54 4.46-1.49 7.68-5.71 7.68-10.68C23.25 5.48 18.27.5 12 .5z"/>
@@ -437,6 +437,10 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 
 const token = location.pathname.split('/')[2];
 
+// 定义在全局作用域：render()、triggerDownload()、wireUnlock() 都需要访问
+function getBoundCode(){ try { return localStorage.getItem('r2pan_code')?.trim().toUpperCase() || null; } catch { return null; } }
+function setBoundCode(c){ try { if(c) localStorage.setItem('r2pan_code', c.trim().toUpperCase()); else localStorage.removeItem('r2pan_code'); } catch {} }
+
 let TURSTILE_LOADED = false, turnstileReady = false, pendingCb = null;
 function loadTurnstileScript(onload){
   if(TURSTILE_LOADED){ if(window.turnstile){ window.turnstile.ready(cb=>{ turnstileReady = true; onload&&onload(cb); }); } return; }
@@ -601,7 +605,7 @@ function render(d, siteName, oauthErr, oauthProviders){
         <div class="pw-hint">${esc(t('unlockHint'))}</div>
         ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       </div>`
-      :`<a class="btn" id="dl" href="javascript:void(0)" ${d.quota_exceeded?'style="pointer-events:none;opacity:.45"':''} ${oauthEnabled && !oauthAuthed?'style="pointer-events:none;opacity:.45"':''}>
+      :`<a class="btn" id="dl" href="/s/${token}/download" ${d.quota_exceeded?'style="pointer-events:none;opacity:.45"':''} ${oauthEnabled && !oauthAuthed?'style="pointer-events:none;opacity:.45"':''}>
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 20h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         ${esc(t('download'))}
       </a>
@@ -636,24 +640,33 @@ function render(d, siteName, oauthErr, oauthProviders){
 
   // 下载按钮绑定（OAuth 未登录时禁用）
   if(!d.needs_password && !d.quota_exceeded){
-    $('#dl').onclick = () => {
-      if(oauthEnabled && !oauthAuthed){
-        // 跳转到第一个可用 Provider 的登录页
-        const firstStart = oauthProviders[0]?.start_url;
-        if (firstStart) {
-          location.href = firstStart + '&redirect=' + encodeURIComponent(location.pathname);
+    const dlEl = $('#dl');
+    // 无 OAuth/Turnstile/激活码时直接走 <a> 原生下载，不绑定任何处理器；
+    // 即使 JS 被扩展或浏览器策略拦截，按钮依然可用
+    const dlCode = getBoundCode();
+    if(dlCode) dlEl.href = `/s/${token}/download?code=${encodeURIComponent(dlCode)}`;
+    if((oauthEnabled && !oauthAuthed) || (tsEnabled && tsOnDownload) || dlCode){
+      dlEl.onclick = (e) => {
+        if(oauthEnabled && !oauthAuthed){
+          e.preventDefault();
+          // 跳转到第一个可用 Provider 的登录页
+          const firstStart = oauthProviders[0]?.start_url;
+          if (firstStart) {
+            location.href = firstStart + '&redirect=' + encodeURIComponent(location.pathname);
+          }
+          return;
         }
-        return;
-      }
-      triggerDownload(d, ts, tsEnabled, tsOnDownload);
-    };
+        if(tsEnabled && tsOnDownload){
+          e.preventDefault();
+          triggerDownload(d, ts, tsEnabled, tsOnDownload);
+        }
+      };
+    }
   }
 
   if(d.needs_password && $('#pw')) wireUnlock(d, ts, tsEnabled, tsOnDownload, oauthEnabled, oauthAuthed, oauthProviders);
 
   // ═══════ 激活码浮动按钮 & 弹窗 ═══════
-  function getBoundCode(){ try { return localStorage.getItem('r2pan_code')?.trim().toUpperCase() || null; } catch { return null; } }
-  function setBoundCode(c){ try { if(c) localStorage.setItem('r2pan_code', c.trim().toUpperCase()); else localStorage.removeItem('r2pan_code'); } catch {} }
 
   // 更新浮动按钮上的绑定状态 badge
   function updateCodeFloatBadge(){
