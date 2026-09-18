@@ -6,31 +6,30 @@
 <title>cloud-r2pan</title>
 <style>
 :root {
-  --glass: rgba(255,255,255,.09);
-  --glass-strong: rgba(255,255,255,.14);
-  --stroke: rgba(255,255,255,.16);
-  --stroke-strong: rgba(255,255,255,.28);
-  --text: #fff;
-  --text-2: rgba(255,255,255,.66);
-  --text-3: rgba(255,255,255,.42);
-  --blue: #0a84ff;
+  --glass: #ffffff;
+  --glass-strong: #f3f5f9;
+  --stroke: rgba(24,34,58,.10);
+  --stroke-strong: rgba(24,34,58,.14);
+  --text: #1d2433;
+  --text-2: rgba(29,36,51,.62);
+  --text-3: rgba(29,36,51,.45);
+  --blue: #2f6fed;
   --radius: 24px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; background: #f5f6f8; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
   min-height: 100vh; color: var(--text); position: relative; overflow-x: hidden;
-  background: linear-gradient(165deg, #0b1026 0%, #151238 42%, #26104a 100%);
-  background-attachment: fixed;
+  background: #f5f6f8;
   -webkit-tap-highlight-color: transparent;
 }
-::selection { background: rgba(10,132,255,.4); }
+::selection { background: rgba(47,111,237,.22); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb { background: rgba(24,34,58,.18); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
 
 /* ── 背景光斑 ─────────────────────────── */
-.orb { position: fixed; border-radius: 50%; filter: blur(100px); opacity: .45; pointer-events: none; animation: drift 22s ease-in-out infinite alternate; z-index: 0; }
+.orb { position: fixed; border-radius: 50%; filter: blur(100px); opacity: .45; pointer-events: none; animation: drift 22s ease-in-out infinite alternate; z-index: 0; display: none; }
 .o1 { width: 52vmax; height: 52vmax; background: #22d3ee; top: -20%; left: -16%; }
 .o2 { width: 44vmax; height: 44vmax; background: #7c5cf6; bottom: -22%; right: -12%; animation-delay: -8s; }
 .o3 { width: 30vmax; height: 30vmax; background: #ec4899; top: 48%; left: 12%; animation-delay: -15s; opacity: .3; }
@@ -42,47 +41,44 @@ body {
 
 /* ── 玻璃卡片 ─────────────────────────── */
 .glass {
-  background: linear-gradient(150deg, rgba(255,255,255,.12), rgba(255,255,255,.045));
-  backdrop-filter: blur(28px) saturate(170%); -webkit-backdrop-filter: blur(28px) saturate(170%);
-  border: 1px solid var(--stroke-strong);
+  background: #ffffff;
+  border: 1px solid rgba(24,34,58,.10);
   border-radius: var(--radius);
-  box-shadow: 0 16px 44px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.22);
+  box-shadow: 0 12px 32px rgba(24,34,58,.08);
 }
 
 /* ── 顶栏 ─────────────────────────────── */
 .topbar {
   position: sticky; top: 12px; z-index: 50; margin-bottom: 22px;
   display: flex; align-items: center; gap: 12px; padding: 12px 18px;
-  background: linear-gradient(150deg, rgba(255,255,255,.13), rgba(255,255,255,.06));
-  backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
-  border: 1px solid var(--stroke-strong); border-radius: 22px;
-  box-shadow: 0 14px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.25);
+  background: #ffffff;
+  border: 1px solid rgba(24,34,58,.10); border-radius: 22px;
+  box-shadow: 0 12px 32px rgba(24,34,58,.08);
 }
 .logo { width: 38px; height: 38px; border-radius: 12px; flex: none;
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(150deg, #67e8f9, #3b82f6 55%, #8b5cf6);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 6px 16px rgba(59,130,246,.4); }
+  background: linear-gradient(180deg, #5b9cf5, #2f6fed);
+  box-shadow: 0 6px 16px rgba(47,111,237,.30); }
 .logo svg { width: 22px; height: 22px; }
 .topbar h1 { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
 .topbar .sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
 .topbar .spacer { flex: 1; }
 .traffic-pill {
   display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 14px;
-  background: rgba(255,255,255,.09); border: 1px solid var(--stroke);
+  background: #f3f5f9; border: 1px solid rgba(24,34,58,.10);
   font-size: 13px; font-variant-numeric: tabular-nums; cursor: pointer; white-space: nowrap;
   transition: background .2s;
 }
-.traffic-pill:hover { background: rgba(255,255,255,.15); }
-.traffic-pill .bar { width: 52px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.14); overflow: hidden; }
-.traffic-pill .bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg,#34d399,#0a84ff); transition: width .5s cubic-bezier(.22,1,.36,1); }
-.traffic-pill.danger .bar i { background: linear-gradient(90deg,#fbbf24,#ff453a); }
-.traffic-pill.danger { color: #ffb3ae; }
+.traffic-pill:hover { background: #eef1f5; }
+.traffic-pill .bar { width: 52px; height: 5px; border-radius: 3px; background: rgba(24,34,58,.12); overflow: hidden; }
+.traffic-pill .bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg,#0f9d58,#2f6fed); transition: width .5s cubic-bezier(.22,1,.36,1); }
+.traffic-pill.danger .bar i { background: linear-gradient(90deg,#f59e0b,#dc2626); }
+.traffic-pill.danger { color: #dc2626; }
 
 /* ── 分段控制 ─────────────────────────── */
 .seg {
   display: flex; gap: 4px; padding: 4px; margin-bottom: 22px; border-radius: 18px;
-  background: rgba(255,255,255,.08); border: 1px solid var(--stroke);
-  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  background: #eef1f5; border: 1px solid rgba(24,34,58,.10);
   overflow-x: auto; scrollbar-width: none;
 }
 .seg::-webkit-scrollbar { display: none; }
@@ -92,8 +88,8 @@ body {
   font-family: inherit; cursor: pointer; transition: all .2s;
 }
 .seg button.active {
-  color: #fff; background: rgba(255,255,255,.16);
-  box-shadow: 0 4px 14px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.25);
+  color: #1d2433; background: #ffffff;
+  box-shadow: 0 2px 8px rgba(24,34,58,.12);
 }
 
 /* ── 统计卡片 ─────────────────────────── */
@@ -103,9 +99,9 @@ body {
 .stat-card .label { font-size: 13px; color: var(--text-2); display: flex; align-items: center; gap: 7px; }
 .stat-card .value { margin-top: 8px; font-size: 27px; font-weight: 750; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
 .stat-card .value small { font-size: 14px; font-weight: 600; color: var(--text-2); margin-left: 3px; }
-.progress { margin-top: 12px; height: 7px; border-radius: 4px; background: rgba(255,255,255,.12); overflow: hidden; }
-.progress i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg,#34d399,#0a84ff); transition: width .6s cubic-bezier(.22,1,.36,1); }
-.progress.hot i { background: linear-gradient(90deg,#fbbf24,#ff453a); }
+.progress { margin-top: 12px; height: 7px; border-radius: 4px; background: rgba(24,34,58,.08); overflow: hidden; }
+.progress i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg,#0f9d58,#2f6fed); transition: width .6s cubic-bezier(.22,1,.36,1); }
+.progress.hot i { background: linear-gradient(90deg,#f59e0b,#dc2626); }
 .stat-card .foot { margin-top: 8px; font-size: 12px; color: var(--text-3); }
 
 /* ── 通用卡片区块 ─────────────────────── */
@@ -117,9 +113,9 @@ body {
 .chart { display: flex; align-items: flex-end; gap: 6px; height: 150px; padding-top: 8px; }
 .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px; min-width: 0; height: 100%; }
 .chart .bar { width: 100%; max-width: 34px; border-radius: 8px 8px 4px 4px;
-  background: linear-gradient(180deg, rgba(103,232,249,.95), rgba(59,130,246,.55));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.4); transition: height .7s cubic-bezier(.22,1,.36,1); min-height: 3px; position: relative; }
-.chart .bar:hover { background: linear-gradient(180deg, #67e8f9, #3b82f6); }
+  background: linear-gradient(180deg, #5b9cf5, rgba(47,111,237,.62));
+  transition: height .7s cubic-bezier(.22,1,.36,1); min-height: 3px; position: relative; }
+.chart .bar:hover { background: linear-gradient(180deg, #3b82f6, #2f6fed); }
 .chart .bar span { position: absolute; top: -22px; left: 50%; transform: translateX(-50%);
   font-size: 11px; color: var(--text-2); opacity: 0; transition: opacity .15s; white-space: nowrap; }
 .chart .bar:hover span { opacity: 1; }
@@ -128,11 +124,11 @@ body {
 /* ── 表格 ─────────────────────────────── */
 .tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .tbl th { text-align: left; padding: 9px 10px; color: var(--text-3); font-weight: 600; font-size: 12px;
-  border-bottom: 1px solid var(--stroke); white-space: nowrap; }
-.tbl td { padding: 11px 10px; border-bottom: 1px solid rgba(255,255,255,.06); white-space: nowrap; vertical-align: middle; }
+  background: #eef1f5; border-bottom: 1px solid rgba(24,34,58,.10); white-space: nowrap; }
+.tbl td { padding: 11px 10px; border-bottom: 1px solid rgba(24,34,58,.07); white-space: nowrap; vertical-align: middle; }
 .tbl tr:last-child td { border-bottom: none; }
 .tbl tr { transition: background .15s; }
-.tbl tbody tr:hover { background: rgba(255,255,255,.05); }
+.tbl tbody tr:hover { background: #eef1f5; }
 .tbl .num { font-variant-numeric: tabular-nums; }
 .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace; font-size: 12.5px; }
 .name-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
@@ -143,42 +139,41 @@ body {
 .ficon { width: 38px; height: 38px; border-radius: 11px; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 800; letter-spacing: -.02em;
-  background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.15);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.18); vertical-align: middle; }
+  background: #f3f5f9; border: 1px solid rgba(24,34,58,.10); vertical-align: middle; }
 
 /* ── 按钮 ─────────────────────────────── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 9px 16px; border: 1px solid var(--stroke-strong); border-radius: 13px;
-  background: rgba(255,255,255,.1); color: #fff; font-size: 13.5px; font-weight: 600; font-family: inherit;
+  padding: 9px 16px; border: 1px solid rgba(24,34,58,.12); border-radius: 13px;
+  background: #ffffff; color: #1d2433; font-size: 13.5px; font-weight: 600; font-family: inherit;
   cursor: pointer; transition: all .18s; white-space: nowrap;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+  box-shadow: 0 1px 3px rgba(24,34,58,.06);
 }
-.btn:hover { background: rgba(255,255,255,.17); transform: translateY(-1px); }
+.btn:hover { background: #f3f5f9; transform: translateY(-1px); }
 .btn:active { transform: scale(.96); }
-.btn.primary { background: linear-gradient(180deg,#3d9bff,#0a7cff); border-color: transparent;
-  box-shadow: 0 8px 22px rgba(10,124,255,.38), inset 0 1px 0 rgba(255,255,255,.35); }
+.btn.primary { background: linear-gradient(180deg,#5b9cf5,#2f6fed); border-color: transparent; color: #fff;
+  box-shadow: 0 8px 22px rgba(47,111,237,.30); }
 .btn.primary:hover { filter: brightness(1.06); }
-.btn.danger { background: rgba(255,69,58,.16); border-color: rgba(255,69,58,.4); color: #ffb3ae; }
-.btn.danger:hover { background: rgba(255,69,58,.28); }
+.btn.danger { background: rgba(220,38,38,.08); border-color: rgba(220,38,38,.28); color: #dc2626; }
+.btn.danger:hover { background: rgba(220,38,38,.14); }
 .btn.sm { padding: 6px 12px; font-size: 12.5px; border-radius: 10px; }
 .btn[disabled] { opacity: .4; pointer-events: none; }
 
 /* ── 上传区 ───────────────────────────── */
 .dropzone {
   margin-bottom: 18px; padding: 34px 20px; text-align: center; cursor: pointer;
-  border: 1.5px dashed rgba(255,255,255,.28); border-radius: var(--radius);
-  background: rgba(255,255,255,.045); transition: all .2s;
+  border: 1.5px dashed rgba(24,34,58,.18); border-radius: var(--radius);
+  background: #f3f5f9; transition: all .2s;
 }
-.dropzone:hover, .dropzone.over { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.5); transform: scale(1.005); }
+.dropzone:hover, .dropzone.over { background: #eef1f5; border-color: rgba(47,111,237,.55); transform: scale(1.005); }
 .dropzone .icon { font-size: 34px; margin-bottom: 10px; }
 .dropzone .t { font-size: 15px; font-weight: 650; }
 .dropzone .d { margin-top: 6px; font-size: 12.5px; color: var(--text-3); }
 .upload-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-top: 10px;
-  border-radius: 16px; background: rgba(255,255,255,.07); border: 1px solid var(--stroke); font-size: 13.5px; }
-.upload-item .prog { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+  border-radius: 16px; background: #f3f5f9; border: 1px solid rgba(24,34,58,.10); font-size: 13.5px; }
+.upload-item .prog { flex: 1; height: 6px; border-radius: 3px; background: rgba(24,34,58,.10); overflow: hidden; }
 .upload-item .prog i { display: block; height: 100%; width: 0; border-radius: 3px;
-  background: linear-gradient(90deg,#34d399,#0a84ff); transition: width .2s; }
+  background: linear-gradient(90deg,#0f9d58,#2f6fed); transition: width .2s; }
 .upload-item .pct { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); }
 
 /* ── 表单 ─────────────────────────────── */
@@ -186,10 +181,10 @@ body {
 .field label { display: block; font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 7px; }
 .field input, .field select {
   width: 100%; padding: 12px 14px; border-radius: 14px; font-size: 15px; font-family: inherit;
-  color: #fff; background: rgba(255,255,255,.09); border: 1px solid var(--stroke-strong); outline: none;
+  color: #1d2433; background: #f3f5f9; border: 1px solid rgba(24,34,58,.12); outline: none;
   transition: border .2s, background .2s; -webkit-appearance: none; appearance: none;
 }
-.field input:focus { border-color: rgba(10,132,255,.7); background: rgba(255,255,255,.13); }
+.field input:focus { border-color: rgba(47,111,237,.6); background: #ffffff; }
 .field input::placeholder { color: var(--text-3); }
 .field .tip { margin-top: 6px; font-size: 12px; color: var(--text-3); line-height: 1.5; }
 
@@ -197,44 +192,44 @@ body {
 .group { border-radius: 22px; overflow: hidden; margin-bottom: 16px; }
 .group .row {
   display: flex; align-items: center; gap: 12px; padding: 14px 18px;
-  border-bottom: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.05);
+  border-bottom: 1px solid rgba(24,34,58,.07); background: #ffffff;
 }
 .group .row:last-child { border-bottom: none; }
+.group .row:hover { background: #eef1f5; }
 .group .row .info { flex: 1; min-width: 0; }
 .group .row .info .t { font-size: 14.5px; font-weight: 600; }
 .group .row .info .d { margin-top: 3px; font-size: 12.5px; color: var(--text-3); line-height: 1.5; }
 .group .row input[type=number], .group .row input[type=text] {
   width: 110px; padding: 9px 12px; border-radius: 12px; font-size: 14.5px; font-family: inherit;
-  color: #fff; background: rgba(255,255,255,.1); border: 1px solid var(--stroke-strong); outline: none; text-align: right;
+  color: #1d2433; background: #f3f5f9; border: 1px solid rgba(24,34,58,.12); outline: none; text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.group .row input[type=number]:focus { border-color: rgba(10,132,255,.7); }
+.group .row input[type=number]:focus { border-color: rgba(47,111,237,.6); background: #ffffff; }
 .group .row input[type=text] { width: 170px; text-align: left; }
 
 /* iOS 开关 */
 .switch { position: relative; width: 50px; height: 30px; flex: none; cursor: pointer; }
 .switch input { opacity: 0; width: 0; height: 0; }
-.switch .track { position: absolute; inset: 0; border-radius: 16px; background: rgba(255,255,255,.16); transition: background .25s; }
+.switch .track { position: absolute; inset: 0; border-radius: 16px; background: rgba(24,34,58,.14); transition: background .25s; }
 .switch .thumb { position: absolute; top: 2px; left: 2px; width: 26px; height: 26px; border-radius: 50%;
-  background: #fff; box-shadow: 0 3px 8px rgba(0,0,0,.35); transition: transform .25s cubic-bezier(.22,1.2,.36,1); }
-.switch input:checked + .track { background: linear-gradient(180deg,#3d9bff,#0a7cff); }
+  background: #fff; box-shadow: 0 2px 6px rgba(24,34,58,.22); transition: transform .25s cubic-bezier(.22,1.2,.36,1); }
+.switch input:checked + .track { background: linear-gradient(180deg,#5b9cf5,#2f6fed); }
 .switch input:checked + .track .thumb { transform: translateX(20px); }
 
 /* ── 模态框（底部弹层风格） ───────────── */
 .modal-mask { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-end; justify-content: center;
-  background: rgba(0,0,0,.45); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  background: rgba(24,34,58,.32); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   animation: fadeIn .25s both; }
 @media (min-width: 640px) { .modal-mask { align-items: center; padding-bottom: 0; } }
 .modal {
   width: 100%; max-width: 480px; max-height: 88vh; overflow-y: auto;
   padding: 26px; border-radius: 32px 32px 0 0;
-  background: linear-gradient(160deg, rgba(40,38,80,.92), rgba(24,22,52,.95));
-  backdrop-filter: blur(40px) saturate(180%); -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border: 1px solid var(--stroke-strong); border-bottom: none;
-  box-shadow: 0 -20px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.2);
+  background: #ffffff;
+  border: 1px solid rgba(24,34,58,.10); border-bottom: none;
+  box-shadow: 0 -12px 40px rgba(24,34,58,.16);
   animation: sheetUp .4s cubic-bezier(.22,1.1,.36,1) both;
 }
-@media (min-width: 640px) { .modal { border-radius: 32px; border-bottom: 1px solid var(--stroke-strong); } }
+@media (min-width: 640px) { .modal { border-radius: 32px; border-bottom: 1px solid rgba(24,34,58,.10); } }
 @keyframes sheetUp { from { transform: translateY(60px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .modal h3 { font-size: 18px; font-weight: 700; letter-spacing: -.02em; margin-bottom: 4px; }
@@ -243,20 +238,20 @@ body {
 .modal .actions .btn { flex: 1; padding: 13px; font-size: 15px; border-radius: 16px; }
 .link-box { display: flex; gap: 8px; margin-top: 4px; }
 .link-box input { flex: 1; padding: 12px 14px; border-radius: 14px; font-size: 14px;
-  font-family: ui-monospace, "SF Mono", monospace; color: #a5d8ff;
-  background: rgba(0,0,0,.3); border: 1px solid var(--stroke); outline: none; }
+  font-family: ui-monospace, "SF Mono", monospace; color: #2563eb;
+  background: #f3f5f9; border: 1px solid rgba(24,34,58,.10); outline: none; }
 
 /* ── Toast ────────────────────────────── */
 #toasts { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 200;
   display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
 .toast {
-  padding: 11px 22px; border-radius: 16px; font-size: 14px; font-weight: 600; color: #fff;
-  background: rgba(30,28,60,.88); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--stroke-strong); box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  padding: 11px 22px; border-radius: 16px; font-size: 14px; font-weight: 600; color: #1d2433;
+  background: #ffffff;
+  border: 1px solid rgba(24,34,58,.10); box-shadow: 0 12px 32px rgba(24,34,58,.16);
   animation: toastIn .35s cubic-bezier(.22,1.2,.36,1) both; max-width: 86vw; text-align: center;
 }
-.toast.ok { border-color: rgba(52,211,153,.5); }
-.toast.err { border-color: rgba(255,69,58,.55); }
+.toast.ok { border-color: rgba(15,157,88,.45); }
+.toast.err { border-color: rgba(220,38,38,.5); }
 .toast.out { animation: toastOut .3s ease both; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(-16px) scale(.92); } to { opacity: 1; transform: none; } }
 @keyframes toastOut { from { opacity: 1; } to { opacity: 0; transform: translateY(-12px) scale(.94); } }
@@ -267,18 +262,18 @@ body {
 
 /* ── 状态徽章 ─────────────────────────── */
 .tag { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 9px; font-size: 11.5px; font-weight: 650; }
-.tag.active { background: rgba(52,211,153,.16); color: #6ee7b7; }
-.tag.expired { background: rgba(255,159,10,.16); color: #fcd34d; }
-.tag.revoked { background: rgba(255,69,58,.16); color: #fda293; }
-.tag.maxed { background: rgba(255,159,10,.16); color: #fcd34d; }
+.tag.active { background: rgba(52,211,153,.16); color: #0f9d58; }
+.tag.expired { background: rgba(255,159,10,.16); color: #b45309; }
+.tag.revoked { background: rgba(255,69,58,.16); color: #dc2626; }
+.tag.maxed { background: rgba(255,159,10,.16); color: #b45309; }
 .tag i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* ── 警示横幅 ─────────────────────────── */
 .banner { display: flex; gap: 12px; align-items: flex-start; padding: 15px 18px; margin-bottom: 18px;
-  border-radius: 20px; background: rgba(255,159,10,.12); border: 1px solid rgba(255,159,10,.38); }
+  border-radius: 20px; background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.3); }
 .banner .ic { font-size: 20px; line-height: 1.3; }
-.banner .t { font-size: 14px; font-weight: 650; color: #ffd9a0; }
-.banner .d { margin-top: 3px; font-size: 12.5px; color: rgba(255,217,160,.75); line-height: 1.55; }
+.banner .t { font-size: 14px; font-weight: 650; color: #b45309; }
+.banner .d { margin-top: 3px; font-size: 12.5px; color: rgba(180,83,9,.78); line-height: 1.55; }
 
 /* ── 登录页 ───────────────────────────── */
 #login-view { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; position: relative; z-index: 1; }
@@ -289,17 +284,17 @@ body {
 .login-card h1 { font-size: 23px; font-weight: 750; letter-spacing: -.03em; }
 .login-card .sub { margin: 8px 0 26px; font-size: 13.5px; color: var(--text-3); }
 .login-card input { width: 100%; padding: 15px 18px; border-radius: 18px; font-size: 16px; font-family: inherit;
-  color: #fff; background: rgba(255,255,255,.09); border: 1px solid var(--stroke-strong); outline: none; text-align: center;
+  color: #1d2433; background: #f3f5f9; border: 1px solid rgba(24,34,58,.12); outline: none; text-align: center;
   transition: border .2s, background .2s; }
-.login-card input:focus { border-color: rgba(10,132,255,.75); background: rgba(255,255,255,.13); }
+.login-card input:focus { border-color: rgba(47,111,237,.65); background: #ffffff; }
 .login-card .btn { width: 100%; margin-top: 14px; padding: 15px; font-size: 16px; border-radius: 18px; }
-.login-card .err { margin-top: 12px; font-size: 13px; color: #fda293; min-height: 18px; }
+.login-card .err { margin-top: 12px; font-size: 13px; color: #dc2626; min-height: 18px; }
 .login-card .lang-row { margin-top: 18px; }
 .shake { animation: shake .4s; }
 @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-9px)} 40%,80%{transform:translateX(9px)} }
 
 @keyframes fadeUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-.spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: #fff; animation: spin .8s linear infinite; margin: 30px auto; }
+.spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(24,34,58,.12); border-top-color: #2f6fed; animation: spin .8s linear infinite; margin: 30px auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .actions-cell { display: flex; gap: 6px; }
@@ -943,13 +938,13 @@ function fmtTime(ts){
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 const EXT_COLORS = {
-  zip:'#ffb340',rar:'#ffb340','7z':'#ffb340',tar:'#ffb340',gz:'#ffb340',
-  pdf:'#ff6961',doc:'#5b9cf5',docx:'#5b9cf5',txt:'#9aa4b2',md:'#9aa4b2',
-  xls:'#3ecf8e',xlsx:'#3ecf8e',csv:'#3ecf8e',ppt:'#ff9f0a',pptx:'#ff9f0a',
-  mp3:'#bf5af2',wav:'#bf5af2',flac:'#bf5af2',m4a:'#bf5af2',
-  mp4:'#ff453a',mov:'#ff453a',mkv:'#ff453a',avi:'#ff453a',
-  png:'#30d158',jpg:'#30d158',jpeg:'#30d158',gif:'#30d158',webp:'#30d158',svg:'#30d158',
-  apk:'#3ecf8e',exe:'#9aa4b2',iso:'#9aa4b2',dmg:'#9aa4b2',default:'#8ea0c8'
+  zip:'#b45309',rar:'#b45309','7z':'#b45309',tar:'#b45309',gz:'#b45309',
+  pdf:'#dc2626',doc:'#2563eb',docx:'#2563eb',txt:'#6b7280',md:'#6b7280',
+  xls:'#0f9d58',xlsx:'#0f9d58',csv:'#0f9d58',ppt:'#b45309',pptx:'#b45309',
+  mp3:'#7c3aed',wav:'#7c3aed',flac:'#7c3aed',m4a:'#7c3aed',
+  mp4:'#dc2626',mov:'#dc2626',mkv:'#dc2626',avi:'#dc2626',
+  png:'#0f9d58',jpg:'#0f9d58',jpeg:'#0f9d58',gif:'#0f9d58',webp:'#0f9d58',svg:'#0f9d58',
+  apk:'#0f9d58',exe:'#6b7280',iso:'#6b7280',dmg:'#6b7280',default:'#475569'
 };
 const extOf = n => (/\.([a-z0-9]+)$/i.exec(n||'')||[])[1]?.toLowerCase() || '';
 const extColor = n => EXT_COLORS[extOf(n)] || EXT_COLORS.default;
@@ -1283,7 +1278,7 @@ async function loadFiles(){
   $('#view').innerHTML = `
     <div class="glass section" style="padding:14px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button class="btn sm primary" id="fo-new">📁 ${esc(t('newFolder'))}</button>
-      <select id="fo-filter" style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+      <select id="fo-filter" style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <option value="">${esc(t('folderFilterAll'))}</option>
         <option value="root">${esc(t('folderFilterRoot'))}</option>
         ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(f.name)}（${f.file_count}）</option>`).join('')}
@@ -1412,7 +1407,7 @@ function openShareModal(fileId){
     <div class="sub">${esc(t('shareModalSub'))}</div>
     <div class="field">
       <label>${esc(t('validity'))}</label>
-      <select id="sh-exp" style="width:100%;padding:12px 14px;border-radius:14px;font-size:15px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+      <select id="sh-exp" style="width:100%;padding:12px 14px;border-radius:14px;font-size:15px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <option value="0" style="color:#111">${esc(t('perm'))}</option>
         <option value="1" style="color:#111">${esc(t('h1'))}</option>
         <option value="24" style="color:#111">${esc(t('d1'))}</option>
@@ -1454,14 +1449,14 @@ function openShareModal(fileId){
         <div class="sub">${esc(t('shareCreatedSub'))}</div>
         <div style="display:flex;flex-direction:column;gap:14px">
           <div>
-            <div style="font-size:12px;color:rgba(255,255,255,.5);margin-bottom:6px">${esc(t('sharePageLink'))}</div>
+            <div style="font-size:12px;color:rgba(29,36,51,.62);margin-bottom:6px">${esc(t('sharePageLink'))}</div>
             <div class="link-box">
               <input readonly value="${esc(url)}" onclick="this.select()">
               <button class="btn primary" data-copy="${esc(url)}">${esc(t('copy'))}</button>
             </div>
           </div>
           <div>
-            <div style="font-size:12px;color:rgba(255,255,255,.5);margin-bottom:6px">${esc(t('directLinkLabel'))}</div>
+            <div style="font-size:12px;color:rgba(29,36,51,.62);margin-bottom:6px">${esc(t('directLinkLabel'))}</div>
             <div class="link-box">
               <input readonly value="${esc(directUrl)}" onclick="this.select()">
               <button class="btn primary" data-copy="${esc(directUrl)}">${esc(t('copy'))}</button>
@@ -1494,9 +1489,9 @@ async function loadShares(){
           const pw = s.has_password ? (s.password_plain || '') : null;
           return `
           <tr>
-            <td class="name-cell">${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#6ee7b7;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
-            <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#a5d8ff;text-decoration:none">/s/${s.id}</a><br><span style="font-size:10px;color:rgba(255,255,255,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" style="color:#fde68a;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button></td>
-            <td class="mono">${pw ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#fde68a">••••••</span>
+            <td class="name-cell">${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
+            <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#2563eb;text-decoration:none">/s/${s.id}</a><br><span style="font-size:10px;color:rgba(29,36,51,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" style="color:#b45309;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button></td>
+            <td class="mono">${pw ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
               <button class="btn sm" data-pw="${s.id}" data-val="${esc(pw)}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
               <button class="btn sm" data-cpw="${esc(pw)}" style="padding:2px 8px;font-size:11px">📋</button>` : `<span style="color:var(--text-3)">—</span>`}</td>
             <td class="num">${s.download_count} / ${s.max_downloads ?? '∞'}</td>
@@ -1554,7 +1549,7 @@ async function loadLogs(){
       <div class="section-title"><h2>📜 ${esc(t('logsTitle'))}（${esc(t('totalN',{n:d.total}))}）</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <input id="log-q" placeholder="${esc(t('searchPlaceholder'))}" value="${esc(logsQuery)}"
-            style="padding:8px 14px;border-radius:12px;font-size:13px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none;width:180px">
+            style="padding:8px 14px;border-radius:12px;font-size:13px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;width:180px">
           <button class="btn sm" id="clear-30">${esc(t('clear30'))}</button>
           <button class="btn sm danger" id="clear-all">${esc(t('clearAll'))}</button>
         </div>
@@ -1604,9 +1599,9 @@ async function loadBans(){
       <div class="section-title"><h2>⛔ ${esc(t('manualBan'))}</h2></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <input id="ban-ip" placeholder="${esc(t('ipPlaceholder'))}" class="mono"
-          style="flex:1;min-width:160px;padding:11px 14px;border-radius:14px;font-size:14px;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+          style="flex:1;min-width:160px;padding:11px 14px;border-radius:14px;font-size:14px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <input id="ban-reason" placeholder="${esc(t('reasonPlaceholder'))}"
-          style="flex:1;min-width:160px;padding:11px 14px;border-radius:14px;font-size:14px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+          style="flex:1;min-width:160px;padding:11px 14px;border-radius:14px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <button class="btn primary" id="ban-add">${esc(t('ban'))}</button>
       </div>
       <div class="field" style="margin:12px 0 0"><div class="tip">${esc(t('banTip'))}</div></div>
@@ -1666,18 +1661,18 @@ async function loadSecurity(){
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <select id="sec-action" style="padding:8px 12px;border-radius:12px;font-size:13px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+        <select id="sec-action" style="padding:8px 12px;border-radius:12px;font-size:13px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
           <option value="" style="color:#111">${esc(t('secActionAll'))}</option>
           <option value="login" style="color:#111">${esc(t('actionLogin'))}</option>
           <option value="logout" style="color:#111">${esc(t('actionLogout'))}</option>
         </select>
-        <select id="sec-result" style="padding:8px 12px;border-radius:12px;font-size:13px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+        <select id="sec-result" style="padding:8px 12px;border-radius:12px;font-size:13px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
           <option value="" style="color:#111">${esc(t('secFilterAll'))}</option>
           <option value="success" style="color:#111">${esc(t('secFilterSuccess'))}</option>
           <option value="fail" style="color:#111">${esc(t('secFilterFail'))}</option>
         </select>
         <input id="sec-q" placeholder="${esc(t('secSearchPh'))}" value="${esc(secQuery)}"
-          style="padding:8px 14px;border-radius:12px;font-size:13px;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none;flex:1;min-width:160px">
+          style="padding:8px 14px;border-radius:12px;font-size:13px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;flex:1;min-width:160px">
         <button class="btn sm" id="sec-clear-30">${esc(t('secClear30'))}</button>
         <button class="btn sm danger" id="sec-clear-all">${esc(t('secClearAll'))}</button>
       </div>
@@ -1695,7 +1690,7 @@ async function loadSecurity(){
             <td>${esc(l.country || '—')}</td>
             <td>${esc(l.browser)}</td>
             <td>${esc(l.os)}</td>
-            <td>${l.result === 'success' ? '<span style="color:#6ee7b7">✓ ' + esc(t('resultSuccess')) + '</span>' : '<span style="color:#fda293">✗ ' + esc(t('resultFail')) + '</span>'}</td>
+            <td>${l.result === 'success' ? '<span style="color:#0f9d58">✓ ' + esc(t('resultSuccess')) + '</span>' : '<span style="color:#dc2626">✗ ' + esc(t('resultFail')) + '</span>'}</td>
             <td class="name-cell" title="${esc(reasonText)}">${esc(reasonText)}</td>
             <td class="num">${fmtTime(l.created_at)}</td>
           </tr>`;
@@ -1792,7 +1787,7 @@ function countryName(code){
 async function loadGlobal(){
   const days = globalDays || 30;
   const v = $('#view');
-  v.innerHTML = `<div class="glass section" style="padding:24px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><div><h2 style="margin:0;font-size:18px">${esc(t('globalTitle'))}</h2><div style="color:var(--text-3);font-size:12.5px;margin-top:4px">${esc(t('globalSub'))}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--text-3);font-size:13px">${esc(t('globalDays'))}</span><select id="g-days" class="sel">${[7,14,30,90,365].map(d=>`<option value="${d}"${d===days?' selected':''}>${d}${LANG==='zh'?' 天':'d'}</option>`).join('')}</select></div></div><div id="globe" style="width:100%;height:520px;border-radius:16px;background:linear-gradient(135deg,#0a0d20 0%,#0f1629 100%)"></div><div id="global-totals" style="display:flex;gap:16px;margin-top:16px"></div><div id="global-table-wrap" style="margin-top:16px"></div></div>`;
+  v.innerHTML = `<div class="glass section" style="padding:24px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><div><h2 style="margin:0;font-size:18px">${esc(t('globalTitle'))}</h2><div style="color:var(--text-3);font-size:12.5px;margin-top:4px">${esc(t('globalSub'))}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--text-3);font-size:13px">${esc(t('globalDays'))}</span><select id="g-days" class="sel">${[7,14,30,90,365].map(d=>`<option value="${d}"${d===days?' selected':''}>${d}${LANG==='zh'?' 天':'d'}</option>`).join('')}</select></div></div><div id="globe" style="width:100%;height:520px;border-radius:16px;background:#f3f5f9"></div><div id="global-totals" style="display:flex;gap:16px;margin-top:16px"></div><div id="global-table-wrap" style="margin-top:16px"></div></div>`;
   $('#g-days').onchange = e => { globalDays = Number(e.target.value); loadGlobal(); };
 
   const data = await api('/api/admin/global/stats?since_days=' + days);
@@ -1816,7 +1811,7 @@ async function loadGlobal(){
   try {
     await ensureECharts();
   } catch (err) {
-    $('#globe').innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#ef4444;font-size:14px">Failed to load chart library</div>`;
+    $('#globe').innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:14px">Failed to load chart library</div>`;
     return;
   }
 
@@ -1857,10 +1852,10 @@ async function loadGlobal(){
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'item',
-      backgroundColor: 'rgba(15,22,41,0.92)',
-      borderColor: 'rgba(99,179,237,0.4)',
+      backgroundColor: '#ffffff',
+      borderColor: 'rgba(24,34,58,.12)',
       borderWidth: 1,
-      textStyle: { color: '#e2e8f0', fontSize: 13 },
+      textStyle: { color: '#1d2433', fontSize: 13 },
       formatter: (p) => {
         if (p.componentType === 'series') {
           const d = p.data;
@@ -1877,8 +1872,8 @@ async function loadGlobal(){
       left: 16, bottom: 40,
       text: [LANG==='zh'?'高':'High', LANG==='zh'?'低':'Low'],
       calculable: true,
-      inRange: { color: ['#1e3a5f', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#dbeafe'] },
-      textStyle: { color: '#94a3b8' }
+      inRange: { color: ['#dbeafe', '#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1e3a5f'] },
+      textStyle: { color: '#6b7280' }
     },
     series: [{
       type: 'map',
@@ -1889,13 +1884,13 @@ async function loadGlobal(){
       scaleLimit: { min: 0.8, max: 4 },
       label: { show: false },
       itemStyle: {
-        areaColor: '#1e293b',
-        borderColor: '#334155',
+        areaColor: '#e2e8f0',
+        borderColor: '#cbd5e1',
         borderWidth: 0.5,
       },
       emphasis: {
-        label: { show: true, color: '#f1f5f9' },
-        itemStyle: { areaColor: '#0ea5e9', borderColor: '#38bdf8', borderWidth: 1 }
+        label: { show: true, color: '#1d2433' },
+        itemStyle: { areaColor: '#2563eb', borderColor: '#1d4ed8', borderWidth: 1 }
       },
       data: globeData.map(d => ({ name: d.name, value: d.downloads, ...d })),
     },{
@@ -1903,7 +1898,7 @@ async function loadGlobal(){
       coordinateSystem: 'geo',
       name: LANG==='zh'?'热点':'Hotspots',
       symbolSize: (val) => Math.max(4, Math.min(30, Math.sqrt(val[2] / maxDownloads) * 30)),
-      itemStyle: { color: '#0ea5e9', shadowBlur: 10, shadowColor: '#0ea5e9' },
+      itemStyle: { color: '#2563eb', shadowBlur: 10, shadowColor: 'rgba(37,99,235,.35)' },
       data: globeData.map(d => ({ name: d.name, value: d.value, ...d })),
     }],
     geo: {
@@ -1911,8 +1906,8 @@ async function loadGlobal(){
       roam: true,
       zoom: 1.2,
       scaleLimit: { min: 0.8, max: 4 },
-      itemStyle: { areaColor: '#1e293b', borderColor: '#334155' },
-      emphasis: { itemStyle: { areaColor: '#0ea5e9' } },
+      itemStyle: { areaColor: '#e2e8f0', borderColor: '#cbd5e1' },
+      emphasis: { itemStyle: { areaColor: '#2563eb' } },
     }
   });
   // resize handler
@@ -1983,23 +1978,23 @@ async function loadCodes(){
 
       <!-- 用量概览 -->
       <div class="stats-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:18px">
-        <div class="stat-box" style="background:rgba(255,255,255,.06);border-radius:14px;padding:14px;border:1px solid var(--stroke)">
+        <div class="stat-box" style="background:#f3f5f9;border-radius:14px;padding:14px;border:1px solid var(--stroke)">
           <div style="color:var(--text-3);font-size:12px">${esc(t('codesColCode'))} / Total</div>
           <div style="font-size:22px;font-weight:700;margin-top:4px">${totalCodes}</div>
         </div>
-        <div class="stat-box" style="background:rgba(255,255,255,.06);border-radius:14px;padding:14px;border:1px solid var(--stroke)">
+        <div class="stat-box" style="background:#f3f5f9;border-radius:14px;padding:14px;border:1px solid var(--stroke)">
           <div style="color:var(--text-3);font-size:12px">${esc(t('codesStatusUnused'))}</div>
-          <div style="font-size:22px;font-weight:700;margin-top:4px;color:#34d399">${sum.unused||0}</div>
+          <div style="font-size:22px;font-weight:700;margin-top:4px;color:#0f9d58">${sum.unused||0}</div>
         </div>
-        <div class="stat-box" style="background:rgba(255,255,255,.06);border-radius:14px;padding:14px;border:1px solid var(--stroke)">
+        <div class="stat-box" style="background:#f3f5f9;border-radius:14px;padding:14px;border:1px solid var(--stroke)">
           <div style="color:var(--text-3);font-size:12px">${esc(t('codesStatusActive'))}</div>
-          <div style="font-size:22px;font-weight:700;margin-top:4px;color:#60a5fa">${sum.active||0}</div>
+          <div style="font-size:22px;font-weight:700;margin-top:4px;color:#2563eb">${sum.active||0}</div>
         </div>
-        <div class="stat-box" style="background:rgba(255,255,255,.06);border-radius:14px;padding:14px;border:1px solid var(--stroke)">
+        <div class="stat-box" style="background:#f3f5f9;border-radius:14px;padding:14px;border:1px solid var(--stroke)">
           <div style="color:var(--text-3);font-size:12px">${esc(t('codesColTraffic'))}</div>
           <div style="font-size:18px;font-weight:700;margin-top:4px">${usedTrafficGB} / ${totalTrafficGB} GB</div>
-          <div style="margin-top:6px;height:4px;background:rgba(255,255,255,.15);border-radius:2px;overflow:hidden">
-            <div style="height:100%;width:${trafficPct}%;background:linear-gradient(90deg,#34d399,#60a5fa);border-radius:2px"></div>
+          <div style="margin-top:6px;height:4px;background:rgba(24,34,58,.10);border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${trafficPct}%;background:linear-gradient(90deg,#0f9d58,#2563eb);border-radius:2px"></div>
           </div>
         </div>
       </div>
@@ -2047,7 +2042,7 @@ async function loadCodes(){
       <div class="section-title">
         <h2>📋 ${esc(t('codesListTitle'))} <span id="codes-total-count" style="color:var(--text-3);font-weight:400;font-size:13px"></span></h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <select id="cf-status" style="padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);color:#fff;font-size:13px;font-family:inherit;outline:none">
+          <select id="cf-status" style="padding:8px 12px;border-radius:10px;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);color:#1d2433;font-size:13px;font-family:inherit;outline:none">
             <option value="">${esc(t('codesFilterAll'))} ${esc(t('codesFilterStatus'))}</option>
             <option value="unused">${esc(t('codesStatusUnused'))}</option>
             <option value="active">${esc(t('codesStatusActive'))}</option>
@@ -2055,11 +2050,11 @@ async function loadCodes(){
             <option value="exhausted">${esc(t('codesStatusExhausted'))}</option>
             <option value="revoked">${esc(t('codesStatusRevoked'))}</option>
           </select>
-          <select id="cf-batch" style="padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);color:#fff;font-size:13px;font-family:inherit;outline:none">
+          <select id="cf-batch" style="padding:8px 12px;border-radius:10px;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);color:#1d2433;font-size:13px;font-family:inherit;outline:none">
             <option value="">${esc(t('codesFilterAll'))} ${esc(t('codesFilterBatch'))}</option>
             ${batchOptions.map(b => `<option value="${esc(b.batch_id)}">${esc(b.batch_id)} (${b.count||b.n||0})</option>`).join('')}
           </select>
-          <input type="text" id="cf-q" placeholder="${esc(t('codesFilterQ'))}" value="${esc(codesQ)}" style="padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);color:#fff;font-size:13px;font-family:inherit;outline:none;width:180px">
+          <input type="text" id="cf-q" placeholder="${esc(t('codesFilterQ'))}" value="${esc(codesQ)}" style="padding:8px 12px;border-radius:10px;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);color:#1d2433;font-size:13px;font-family:inherit;outline:none;width:180px">
           <button class="btn sm" id="cf-export">${esc(t('codesExportCsv'))}</button>
           <button class="btn sm danger" id="cf-revoke-batch">${esc(t('codesRevokeBatch'))}</button>
         </div>
@@ -2086,7 +2081,7 @@ async function loadCodes(){
       const preview = r.codes || [];
       $('#cg-preview').innerHTML = `
         <div style="color:var(--text-3);font-size:12px;margin-bottom:6px">${esc(t('codesGeneratedPreview'))}</div>
-        <div style="background:rgba(0,0,0,.3);border-radius:12px;padding:12px;font-family:ui-monospace,'SF Mono',monospace;font-size:12px;color:#fde68a;line-height:1.7;max-height:200px;overflow:auto">
+        <div style="background:rgba(245,158,11,.08);border-radius:12px;padding:12px;font-family:ui-monospace,'SF Mono',monospace;font-size:12px;color:#b45309;line-height:1.7;max-height:200px;overflow:auto">
           ${preview.map(c => `<div>${esc(c)}</div>`).join('')}
         </div>
       `;
@@ -2151,7 +2146,7 @@ async function loadCodesList(){
       return;
     }
     const statusLabel = { unused: t('codesStatusUnused'), active: t('codesStatusActive'), expired: t('codesStatusExpired'), exhausted: t('codesStatusExhausted'), revoked: t('codesStatusRevoked') };
-    const statusColor = { unused: '#9aa4b2', active: '#60a5fa', expired: '#fbbf24', exhausted: '#f87171', revoked: '#a3a3a3' };
+    const statusColor = { unused: '#6b7280', active: '#2563eb', expired: '#b45309', exhausted: '#dc2626', revoked: '#6b7280' };
     $('#codes-table').innerHTML = `
       <div style="overflow-x:auto">
       <table class="admin-table" style="width:100%;border-collapse:separate;border-spacing:0;font-size:13px">
@@ -2171,15 +2166,15 @@ async function loadCodesList(){
             const trafficGB = r.traffic_bytes > 0 ? (r.traffic_bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB' : (r.days_valid > 0 ? t('codesUnlimited') : t('codesRemainingInfinite'));
             const usedGB = r.used_bytes > 0 ? (r.used_bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB' : '0';
             const pct = r.pct || 0;
-            return `<tr style="border-bottom:1px solid rgba(255,255,255,.06)">
-              <td style="padding:10px 8px;font-family:ui-monospace,'SF Mono',monospace;color:#fde68a">${esc(r.code)}</td>
+            return `<tr style="border-bottom:1px solid rgba(24,34,58,.07)">
+              <td style="padding:10px 8px;font-family:ui-monospace,'SF Mono',monospace;color:#b45309">${esc(r.code)}</td>
               <td style="padding:10px 8px;color:var(--text-2)">${esc(r.plan_id||'—')}</td>
               <td style="padding:10px 8px;color:var(--text-2)">${esc(r.batch_id||'—')}</td>
               <td style="padding:10px 8px">
                 <div>${usedGB} / ${trafficGB}</div>
-                ${r.traffic_bytes > 0 ? `<div style="margin-top:4px;height:3px;background:rgba(255,255,255,.15);border-radius:2px;overflow:hidden"><div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#34d399,#60a5fa);border-radius:2px"></div></div>` : ''}
+                ${r.traffic_bytes > 0 ? `<div style="margin-top:4px;height:3px;background:rgba(24,34,58,.10);border-radius:2px;overflow:hidden"><div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#0f9d58,#2563eb);border-radius:2px"></div></div>` : ''}
               </td>
-              <td style="padding:10px 8px"><span style="color:${statusColor[r.status]||'#fff'}">${esc(statusLabel[r.status]||r.status)}</span></td>
+              <td style="padding:10px 8px"><span style="color:${statusColor[r.status]||'#1d2433'}">${esc(statusLabel[r.status]||r.status)}</span></td>
               <td style="padding:10px 8px;color:var(--text-2)">${fmtTime(r.activated_at)}</td>
               <td style="padding:10px 8px">
                 <button class="btn sm" data-query="${esc(r.code)}">${esc(t('codesQueryRemainBtn'))}</button>
@@ -2281,9 +2276,9 @@ async function loadSettings(){
     <div class="glass group">
       <div class="row" style="flex-direction:column;align-items:stretch;gap:10px">
         <div class="info" style="margin-bottom:4px"><div class="t">🔒 ${esc(t('ipWhitelist'))}</div><div class="d">${esc(t('ipWhitelistD'))}</div></div>
-        <textarea id="st-adminips" rows="3" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none;font-family:ui-monospace,'SF Mono',monospace;resize:vertical" placeholder="${esc(t('ipWhitelistPh'))}">${esc(s.admin_ips ?? '')}</textarea>
+        <textarea id="st-adminips" rows="3" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;font-family:ui-monospace,'SF Mono',monospace;resize:vertical" placeholder="${esc(t('ipWhitelistPh'))}">${esc(s.admin_ips ?? '')}</textarea>
         <div class="tip" style="margin-top:4px">
-          ${s.admin_ips ? `<span style="color:#6ee7b7">${esc(t('ipWhitelistOn'))}</span>` : `<span style="color:#fde68a">${esc(t('ipWhitelistOff'))}</span>`}
+          ${s.admin_ips ? `<span style="color:#0f9d58">${esc(t('ipWhitelistOn'))}</span>` : `<span style="color:#b45309">${esc(t('ipWhitelistOff'))}</span>`}
           ${esc(t('ipWhitelistHint'))}
         </div>
       </div>
@@ -2310,7 +2305,7 @@ async function loadSettings(){
       </div>
       <div class="row">
         <div class="info"><div class="t">${esc(t('codesFloatingBtnPosition'))}</div><div class="d">${esc(t('codesFloatingBtnHint'))}</div></div>
-        <select id="st-codes-pos" style="padding:9px 14px;border-radius:12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.28);color:#fff;font-size:14px;font-family:inherit;outline:none;min-width:110px">
+        <select id="st-codes-pos" style="padding:9px 14px;border-radius:12px;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);color:#1d2433;font-size:14px;font-family:inherit;outline:none;min-width:110px">
           <option value="top-right" ${(s.codes_floating_button_position || 'top-right') === 'top-right' ? 'selected' : ''}>${esc(t('codesFloatingBtnPosRight'))}</option>
           <option value="top-left" ${s.codes_floating_button_position === 'top-left' ? 'selected' : ''}>${esc(t('codesFloatingBtnPosLeft'))}</option>
         </select>
@@ -2319,7 +2314,7 @@ async function loadSettings(){
     <!-- 2FA 组 -->
     <div class="glass group">
       <div class="row">
-        <div class="info"><div class="t">🛡️ ${esc(t('twofa'))} ${twofaStatus.enabled ? `<span class="tag active" style="margin-left:6px"><i></i>${esc(t('twofaStatusOn'))}</span>` : `<span class="tag" style="margin-left:6px;background:rgba(255,255,255,.1);color:#a5b4fc"><i></i>${esc(t('twofaStatusOff'))}</span>`}</div>
+        <div class="info"><div class="t">🛡️ ${esc(t('twofa'))} ${twofaStatus.enabled ? `<span class="tag active" style="margin-left:6px"><i></i>${esc(t('twofaStatusOn'))}</span>` : `<span class="tag" style="margin-left:6px;background:#eef1f5;color:#6b7280"><i></i>${esc(t('twofaStatusOff'))}</span>`}</div>
         <div class="d">${esc(t('twofaD'))}</div></div>
         <label class="switch" id="twofa-switch" style="${twofaStatus.enabled ? '' : 'opacity:.5;pointer-events:none'}">
           <input type="checkbox" ${twofaStatus.enabled ? 'checked' : ''} disabled>
@@ -2328,7 +2323,7 @@ async function loadSettings(){
       </div>
       <div class="row" style="flex-direction:column;align-items:flex-start">
         <div style="font-size:12.5px;color:var(--text-3);line-height:1.7">
-          ${twofaStatus.cloudflare_recovery ? `<span style="color:#6ee7b7">${esc(t('twofaHasCloudflareRecovery'))}</span>` : `<span>${esc(t('twofaNoCloudflareRecovery'))}</span>`}
+          ${twofaStatus.cloudflare_recovery ? `<span style="color:#0f9d58">${esc(t('twofaHasCloudflareRecovery'))}</span>` : `<span>${esc(t('twofaNoCloudflareRecovery'))}</span>`}
           ${twofaStatus.enabled ? ` · ${esc(t('twofaRecoveryRemaining',{n:twofaStatus.recovery_remaining}))}` : ''}
         </div>
       </div>
@@ -2348,10 +2343,10 @@ async function loadSettings(){
           <div class="d" style="font-size:12px;line-height:1.6">
             <div>${esc(t('tsGroupD'))}</div>
             <div style="margin-top:6px">
-              <span style="color:${s.turnstile_mode==='off'?'#a5b4fc':'#6ee7b7'}">${esc(t('tsMode'))}: ${s.turnstile_mode}</span>
+              <span style="color:${s.turnstile_mode==='off'?'#6b7280':'#0f9d58'}">${esc(t('tsMode'))}: ${s.turnstile_mode}</span>
               · <span>${esc(t('tsThreshold'))}: ${s.turnstile_threshold ?? 5}</span>
-              · ${s.cloudflare_turnstile_secret ? `<span style="color:#6ee7b7">✓ ${esc(t('tsSecretOk'))}</span>` : `<span style="color:#fda293">⚠ ${esc(t('tsSecretMissing'))}</span>`}
-              · ${s.cloudflare_turnstile_sitekey ? `<span style="color:#6ee7b7">✓ Sitekey Cloudflare</span>` : (s.turnstile_sitekey_override ? `<span style="color:#a5d8ff">✓ Sitekey Override</span>` : `<span style="color:#fde68a">⚠ Sitekey Missing</span>`)}
+              · ${s.cloudflare_turnstile_secret ? `<span style="color:#0f9d58">✓ ${esc(t('tsSecretOk'))}</span>` : `<span style="color:#dc2626">⚠ ${esc(t('tsSecretMissing'))}</span>`}
+              · ${s.cloudflare_turnstile_sitekey ? `<span style="color:#0f9d58">✓ Sitekey Cloudflare</span>` : (s.turnstile_sitekey_override ? `<span style="color:#2563eb">✓ Sitekey Override</span>` : `<span style="color:#b45309">⚠ Sitekey Missing</span>`)}
             </div>
           </div>
         </div>
@@ -2370,9 +2365,9 @@ async function loadSettings(){
             <div style="margin-top:6px">
               ${s.oauth_enabled
                 ? (s.oauth_has_enabled_providers
-                    ? `<span style="color:#6ee7b7">✓ ${esc(t('oauthEnabledN',{n:s.oauth_providers?.length||0}))}</span>`
-                    : `<span style="color:#fda293">⚠ ${esc(t('oauthNoEnabled'))}</span>`)
-                : `<span style="color:#a5b4fc">${esc(t('oauthDisabled'))}</span>`}
+                    ? `<span style="color:#0f9d58">✓ ${esc(t('oauthEnabledN',{n:s.oauth_providers?.length||0}))}</span>`
+                    : `<span style="color:#dc2626">⚠ ${esc(t('oauthNoEnabled'))}</span>`)
+                : `<span style="color:#6b7280">${esc(t('oauthDisabled'))}</span>`}
             </div>
           </div>
         </div>
@@ -2381,14 +2376,14 @@ async function loadSettings(){
       <!-- Provider 卡片列表 -->
       <div id="oauth-providers-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:6px">
         ${(s.oauth_providers && s.oauth_providers.length) ? s.oauth_providers.map(p => `
-          <div class="oauth-provider-card" data-oauth-id="${esc(p.id)}" style="padding:14px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid ${p.enabled ? 'rgba(110,231,183,.35)' : 'rgba(255,255,255,.1)'}">
+          <div class="oauth-provider-card" data-oauth-id="${esc(p.id)}" style="padding:14px;border-radius:14px;background:#f3f5f9;border:1px solid ${p.enabled ? 'rgba(15,157,88,.35)' : 'rgba(24,34,58,.10)'}">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
               <div style="font-weight:600;font-size:14px">${esc(p.label)} <span style="font-size:11px;color:var(--text-3);font-weight:400">${esc(p.provider_type)}</span></div>
               <span class="tag ${p.enabled?'active':''}" style="font-size:11px"><i></i>${p.enabled ? esc(t('oauthEnabled')) : esc(t('oauthDisabled'))}</span>
             </div>
             <div style="font-size:11.5px;color:var(--text-3);line-height:1.6">
               <div><b>Client ID:</b> ${esc(p.client_id || '—')}</div>
-              <div><b>Secret:</b> <span style="${p.secret_configured?'color:#6ee7b7':'color:#fda293'}">${p.secret_configured ? esc(t('oauthSecretConfigured')) : esc(t('oauthSecretNotConfigured'))}</span></div>
+              <div><b>Secret:</b> <span style="${p.secret_configured?'color:#0f9d58':'color:#dc2626'}">${p.secret_configured ? esc(t('oauthSecretConfigured')) : esc(t('oauthSecretNotConfigured'))}</span></div>
               <div><b>Scope:</b> ${esc(p.scope || '—')}</div>
             </div>
             <div style="display:flex;gap:6px;margin-top:10px">
@@ -2450,7 +2445,7 @@ async function loadSettings(){
       <div class="sub">${esc(t('tsGroupD'))}</div>
       <div class="field" style="margin-top:14px">
         <label>${esc(t('tsMode'))}</label>
-        <select id="ts-m" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+        <select id="ts-m" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
           <option value="off" ${s.turnstile_mode==='off'?'selected':''} style="color:#111">${esc(t('tsModeOff'))}</option>
           <option value="on_share" ${s.turnstile_mode==='on_share'?'selected':''} style="color:#111">${esc(t('tsModeShare'))}</option>
           <option value="on_download" ${s.turnstile_mode==='on_download'?'selected':''} style="color:#111">${esc(t('tsModeDownload'))}</option>
@@ -2459,27 +2454,27 @@ async function loadSettings(){
       </div>
       <div class="field">
         <label>${esc(t('tsThreshold'))}</label>
-        <input type="number" id="ts-th" min="0" max="10000" value="${s.turnstile_threshold ?? 5}" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none">
+        <input type="number" id="ts-th" min="0" max="10000" value="${s.turnstile_threshold ?? 5}" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <div class="tip">${esc(t('tsThresholdHelp'))}</div>
       </div>
       <div class="field">
         <label>${esc(t('tsSitekeyOverride'))}</label>
-        <input type="text" id="ts-sko" value="${esc(s.turnstile_sitekey_override ?? '')}" placeholder="0xAAAA..." style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none;font-family:ui-monospace,'SF Mono',monospace">
+        <input type="text" id="ts-sko" value="${esc(s.turnstile_sitekey_override ?? '')}" placeholder="0xAAAA..." style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;font-family:ui-monospace,'SF Mono',monospace">
       </div>
       <div class="field">
         <label>${esc(t('tsSecretOverride'))}</label>
-        <input type="password" id="ts-secret" value="" placeholder="${s.cloudflare_turnstile_secret || s.turnstile_secret_configured ? esc(t('tsSecretKeep')) : esc(t('tsSecretPlaceholder'))}" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#fff;background:rgba(255,255,255,.09);border:1px solid var(--stroke-strong);outline:none;font-family:ui-monospace,'SF Mono',monospace">
+        <input type="password" id="ts-secret" value="" placeholder="${s.cloudflare_turnstile_secret || s.turnstile_secret_configured ? esc(t('tsSecretKeep')) : esc(t('tsSecretPlaceholder'))}" style="width:100%;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;font-family:ui-monospace,'SF Mono',monospace">
         <div class="tip" style="line-height:1.6">
           ${s.cloudflare_turnstile_secret
-            ? `<span style="color:#6ee7b7">✓ ${esc(t('tsSecretOk'))} — ${esc(t('tsSecretInCloudflare'))}</span>`
+            ? `<span style="color:#0f9d58">✓ ${esc(t('tsSecretOk'))} — ${esc(t('tsSecretInCloudflare'))}</span>`
             : s.turnstile_secret_configured
-              ? `<span style="color:#a5d8ff">✓ ${esc(t('tsSecretOk'))} — ${esc(t('tsSecretInDatabase'))}</span>`
-              : `<span style="color:#fda293">⚠ ${esc(t('tsSecretMissing'))} — ${esc(t('tsSecretHint'))}</span>`}<br>
+              ? `<span style="color:#2563eb">✓ ${esc(t('tsSecretOk'))} — ${esc(t('tsSecretInDatabase'))}</span>`
+              : `<span style="color:#dc2626">⚠ ${esc(t('tsSecretMissing'))} — ${esc(t('tsSecretHint'))}</span>`}<br>
           ${s.cloudflare_turnstile_sitekey
-            ? `<span style="color:#6ee7b7">✓ Sitekey ${esc(t('tsInCloudflare'))}</span>`
+            ? `<span style="color:#0f9d58">✓ Sitekey ${esc(t('tsInCloudflare'))}</span>`
             : s.turnstile_sitekey_override
-              ? `<span style="color:#a5d8ff">✓ Sitekey ${esc(t('tsInDatabase'))}</span>`
-              : `<span style="color:#fde68a">⚠ Sitekey ${esc(t('tsMissingBoth'))}</span>`}
+              ? `<span style="color:#2563eb">✓ Sitekey ${esc(t('tsInDatabase'))}</span>`
+              : `<span style="color:#b45309">⚠ Sitekey ${esc(t('tsMissingBoth'))}</span>`}
         </div>
       </div>
       <div class="actions" style="margin-top:18px">
@@ -2585,7 +2580,7 @@ async function loadSettings(){
       <div class="field" style="margin-top:8px">
         <div style="font-size:12px;color:var(--text-3);line-height:1.6">
           ${esc(t('oauthCallbackUrl'))}:<br>
-          <input type="text" readonly value="${esc(window.location.origin)}/oauth/callback" style="width:100%;margin-top:4px;padding:8px 12px;border-radius:10px;font-size:12px;color:#a5d8ff;background:rgba(0,0,0,.3);border:1px solid var(--stroke);outline:none;font-family:ui-monospace,'SF Mono',monospace" onclick="this.select()">
+          <input type="text" readonly value="${esc(window.location.origin)}/oauth/callback" style="width:100%;margin-top:4px;padding:8px 12px;border-radius:10px;font-size:12px;color:#2563eb;background:#f3f5f9;border:1px solid var(--stroke);outline:none;font-family:ui-monospace,'SF Mono',monospace" onclick="this.select()">
           <div style="margin-top:4px">${esc(t('oauthCallbackHint'))}</div>
         </div>
       </div>
@@ -2674,7 +2669,7 @@ async function loadSettings(){
         </div>
         <div style="margin:10px 0;font-size:13px">
           <div style="color:var(--text-3);margin-bottom:4px">${esc(t('twofaSetupKey'))}:</div>
-          <input readonly value="${esc(r.secret)}" style="width:100%;padding:10px 12px;border-radius:10px;font-family:ui-monospace,'SF Mono',monospace;font-size:13px;color:#a5d8ff;background:rgba(0,0,0,.3);border:1px solid var(--stroke)" onclick="this.select()">
+          <input readonly value="${esc(r.secret)}" style="width:100%;padding:10px 12px;border-radius:10px;font-family:ui-monospace,'SF Mono',monospace;font-size:13px;color:#2563eb;background:#f3f5f9;border:1px solid var(--stroke)" onclick="this.select()">
         </div>
         <div class="field" style="margin:12px 0">
           <input type="text" id="2fa-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="${esc(t('twofaSetupCodePh'))}" style="text-align:center;letter-spacing:.4em;font-size:18px">
@@ -2746,9 +2741,9 @@ function showRecoveryCodes(codes){
     <div style="margin:10px 0">
       <div class="banner" style="border-radius:14px;padding:12px 16px">
         <div class="ic">⚠️</div>
-        <div class="t" style="color:#ffd9a0;font-size:13px">${esc(t('twofaSetupRecoveryD'))}</div>
+        <div class="t" style="color:#b45309;font-size:13px">${esc(t('twofaSetupRecoveryD'))}</div>
       </div>
-      <div style="background:rgba(0,0,0,.3);border-radius:12px;padding:16px;font-family:ui-monospace,'SF Mono',monospace;font-size:14px;color:#fde68a;line-height:1.8">
+      <div style="background:rgba(245,158,11,.08);border-radius:12px;padding:16px;font-family:ui-monospace,'SF Mono',monospace;font-size:14px;color:#b45309;line-height:1.8">
         ${codes.map(c => `<div>${esc(c)}</div>`).join('')}
       </div>
     </div>
