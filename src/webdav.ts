@@ -19,20 +19,8 @@
 import type { Env } from "./types";
 import { getSettings } from "./settings";
 import { sha256Hex, safeEqual, randomHex } from "./crypto";
-import { createStorageProvider, type StorageProvider } from "./storage";
+import { getStorageProvider as storage } from "./storage";
 import { randomId } from "./db";
-
-/* ═══════════ 懒加载 StorageProvider ═══════════ */
-let _storagePromise: Promise<StorageProvider> | null = null;
-async function storage(env: Env): Promise<StorageProvider> {
-  if (!_storagePromise) {
-    _storagePromise = (async () => {
-      const s = await getSettings(env);
-      return createStorageProvider(env, s);
-    })();
-  }
-  return _storagePromise;
-}
 
 /* ═══════════ 工具函数 ═══════════ */
 
@@ -580,6 +568,7 @@ async function handleWebDavPut(
     const res = await st.put(key, req.body as any, {
       contentType: mime,
       contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+      contentLength: Number(req.headers.get("content-length")) || undefined,
     });
     size = res.size;
   } catch (err: any) {
@@ -817,7 +806,7 @@ async function handleWebDavCopy(
   const newKey = `files/${newId}`;
   const newName = destPath.split("/").filter(Boolean).pop() || srcFile.name;
 
-  await st.put(newKey, srcObj.body, { contentType: srcFile.mime });
+  await st.put(newKey, srcObj.body, { contentType: srcFile.mime, contentLength: srcObj.size });
 
   await env.db.prepare(
     "INSERT INTO files(id, key, name, size, mime, path, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"

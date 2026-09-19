@@ -7,19 +7,7 @@ import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
 import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual } from "./crypto";
-import { createStorageProvider, type StorageProvider } from "./storage";
-
-/** 懒加载 StorageProvider —— 每次需要时从 settings 构造（settings 有 5s 缓存，成本低） */
-let _storagePromise: Promise<StorageProvider> | null = null;
-async function storage(env: Env): Promise<StorageProvider> {
-  if (!_storagePromise) {
-    _storagePromise = (async () => {
-      const s = await getSettings(env);
-      return createStorageProvider(env, s);
-    })();
-  }
-  return _storagePromise;
-}
+import { getStorageProvider as storage } from "./storage";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -443,6 +431,7 @@ export async function handleAdminApi(
       const res = await st.put(key, req.body, {
         contentType: mime,
         contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+        contentLength: Number(req.headers.get("content-length")) || undefined,
       });
       resultSize = res.size;
     } catch (err: any) {
@@ -1313,8 +1302,6 @@ export async function handleAdminApi(
     }
 
     await updateSettings(env, patch);
-    // storage 配置变了，清掉缓存的 storage provider 让下次请求用新配置
-    _storagePromise = null;
 
     // 单 IP 上限调成不限 / 关掉自动封禁后，要顺手解除此前自动封禁的 IP：
     // 下载入口先查 banned_ips 再看限额，否则管理员会以为设置没生效
@@ -1802,7 +1789,7 @@ export async function handleAdminApi(
         const prov = createS3Provider(cfg);
         const testKey = `_r2pan-test-${Date.now()}`;
         // 写一个测试对象
-        await prov.put(testKey, new TextEncoder().encode("cloud-r2pan storage test").buffer, {
+        await prov.put(testKey, new TextEncoder().encode("cloud-r2pan storage test"), {
           contentType: "text/plain",
         });
         // 读回验证

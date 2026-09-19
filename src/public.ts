@@ -6,19 +6,7 @@ import { findCodeByString, checkCodeUsable, activateCodeIfNeeded, deductQuota, f
 import { errorPage, json } from "./pages";
 import { hmacHex, sha256Hex, randomHex, safeEqual, decryptSecret } from "./crypto";
 import { verifyOAuthSession } from "./oauth";
-import { createStorageProvider, type StorageProvider } from "./storage";
-
-/** 懒加载 StorageProvider —— 和 admin.ts 类似 */
-let _storagePromise: Promise<StorageProvider> | null = null;
-async function storage(env: Env): Promise<StorageProvider> {
-  if (!_storagePromise) {
-    _storagePromise = (async () => {
-      const s = await getSettings(env);
-      return createStorageProvider(env, s);
-    })();
-  }
-  return _storagePromise;
-}
+import { getStorageProvider as storage } from "./storage";
 
 const TOKEN_TTL_MS = 24 * 3600_000; // 授权令牌有效期 24h
 

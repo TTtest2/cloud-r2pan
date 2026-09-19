@@ -11,6 +11,7 @@
 
 import type { Env } from "./types";
 import { decryptSecret } from "./crypto";
+import { getSettings } from "./settings";
 
 /* ═══════════════════════════════════════════════════════
  * 存储提供者接口 —— 替换原有 env.r2 的硬编码
@@ -34,7 +35,7 @@ export interface StorageProvider {
   put(
     key: string,
     body: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array,
-    opts: { contentType?: string; contentDisposition?: string }
+    opts: { contentType?: string; contentDisposition?: string; contentLength?: number }
   ): Promise<StoragePutResult>;
   /** 读取对象（支持 Range） */
   get(key: string, range?: { offset: number; length?: number }): Promise<StorageObject | null>;
@@ -123,16 +124,20 @@ function buildCanonicalRequest(
     .sort();
   const signedHeaders = sortedHeaderNames.join(";");
 
-  const headerLines = sortedHeaderNames.map((name) => `${name}:${headers[name.trim()]!.trim()}\n`).join("");
+  const lowercased: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lowercased[k.toLowerCase()] = v.trim();
+  const headerLines = sortedHeaderNames.map((name) => `${name}:${lowercased[name]}\n`).join("");
 
   // 规范化 query string
   let canonicalQuery = "";
   if (query) {
     const pairs: [string, string][] = [];
     query.forEach((v, k) => pairs.push([k, v]));
+    // SigV4 要求按字节序排序，localeCompare 会按语言环境把 "a" 排在 "B" 前面
+    const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
     pairs.sort((a, b) =>
-      a[0] === b[0] ? encodeURIComponentStrict(a[1]).localeCompare(encodeURIComponentStrict(b[1]))
-        : encodeURIComponentStrict(a[0]).localeCompare(encodeURIComponentStrict(b[0]))
+      a[0] === b[0] ? cmp(encodeURIComponentStrict(a[1]), encodeURIComponentStrict(b[1]))
+        : cmp(encodeURIComponentStrict(a[0]), encodeURIComponentStrict(b[0]))
     );
     canonicalQuery = pairs.map(([k, v]) => `${encodeURIComponentStrict(k)}=${encodeURIComponentStrict(v)}`).join("&");
   }
@@ -149,11 +154,17 @@ function buildCanonicalRequest(
   return { canonical, signedHeaders };
 }
 
+/** Normalize to a standalone ArrayBuffer (copies the view, so byteOffset/length are honoured) */
+function toArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
+  if (data instanceof Uint8Array) return data.slice().buffer as ArrayBuffer;
+  return data;
+}
+
 /** HMAC-SHA256 */
 async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string): Promise<ArrayBuffer> {
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    key instanceof Uint8Array ? key.buffer : key,
+    toArrayBuffer(key),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
@@ -164,6 +175,11 @@ async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string): Promise<
 async function sha256Hex(data: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Binary payloads must be hashed byte-for-byte — a TextDecoder round-trip mangles non-UTF8 bodies */
+async function sha256HexBytes(data: ArrayBuffer | Uint8Array): Promise<string> {
+  return bufToHex(await crypto.subtle.digest("SHA-256", toArrayBuffer(data)));
 }
 
 function bufToHex(buf: ArrayBuffer): string {
@@ -188,26 +204,31 @@ async function signS3Request(
   bodyHash: string,
   now: Date
 ): Promise<{ url: string; headers: Record<string, string> }> {
-  const host = new URL(cfg.endpoint).hostname;
-  const dateStamp = now.toISOString().slice(0, 10);
   const amzDate = now.toISOString().replace(/[-:]/g, "").slice(0, 19) + "Z"; // 20260914T120000Z
+  const dateStamp = amzDate.slice(0, 8); // SigV4 scope 必须是紧凑的 YYYYMMDD
 
-  // 构造 URL
-  const baseUrl = cfg.endpoint.replace(/\/$/, "");
-  const prefix = cfg.pathPrefix ? `/${cfg.pathPrefix.replace(/^\//, "").replace(/\/$/, "")}` : "";
+  const baseUrl = cfg.endpoint.replace(/\/+$/, "");
+  const schemeSep = baseUrl.indexOf("://");
+  const scheme = schemeSep >= 0 ? baseUrl.slice(0, schemeSep + 3) : "https://";
+  const endpointHost = (schemeSep >= 0 ? baseUrl.slice(schemeSep + 3) : baseUrl).split("/")[0];
+  const endpointPath = "/" + (schemeSep >= 0 ? baseUrl.slice(schemeSep + 3) : baseUrl).split("/").slice(1).join("/");
+  const prefix = cfg.pathPrefix
+    ? "/" + cfg.pathPrefix.replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponentStrict).join("/")
+    : "";
   const encodedKey = s3Key.split("/").map(encodeURIComponentStrict).join("/");
 
-  let path: string;
+  let host: string;
   let url: string;
   if (cfg.addressingStyle === "virtual") {
-    // bucket 作为 hostname 前缀（https://bucket.endpoint/key）
-    path = `${prefix}/${encodedKey}`;
-    url = `${baseUrl.replace(`https://`, `https://${cfg.bucket}.`)}${path}`;
+    host = `${cfg.bucket}.${endpointHost}`;
+    url = `${scheme}${host}${endpointPath}${prefix}/${encodedKey}`;
   } else {
-    // path style（默认）: https://endpoint/bucket/key
-    path = `${prefix}/${cfg.bucket}/${encodedKey}`;
-    url = `${baseUrl}${path}`;
+    host = endpointHost;
+    url = `${baseUrl}${prefix}/${encodeURIComponentStrict(cfg.bucket)}/${encodedKey}`;
   }
+
+  // Sign the path actually being sent (endpoint subpath included), not a re-derivation of it
+  const path = new URL(url).pathname;
 
   // 添加签名头
   headers["Host"] = host;
@@ -262,8 +283,8 @@ export function createS3Provider(cfg: S3Config): StorageProvider {
         bodyHash = "UNSIGNED-PAYLOAD";
         fetchBody = opts.body;
       } else if (opts.body instanceof Uint8Array || opts.body instanceof ArrayBuffer) {
-        const buf = opts.body instanceof ArrayBuffer ? opts.body : opts.body.buffer;
-        bodyHash = await sha256Hex(new TextDecoder().decode(buf));
+        const buf = toArrayBuffer(opts.body);
+        bodyHash = await sha256HexBytes(buf);
         fetchBody = buf;
       }
     }
@@ -286,6 +307,13 @@ export function createS3Provider(cfg: S3Config): StorageProvider {
     return resp;
   }
 
+  /** Content-Length of an object via HEAD — used to recover the size of streamed uploads */
+  async function headSize(key: string): Promise<number> {
+    const resp = await doFetch("HEAD", key, {});
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("Content-Length") || "0", 10) || 0;
+  }
+
   return {
     kind: "s3",
 
@@ -293,16 +321,17 @@ export function createS3Provider(cfg: S3Config): StorageProvider {
       const headers: Record<string, string> = {};
       if (opts.contentType) headers["Content-Type"] = opts.contentType;
       if (opts.contentDisposition) headers["Content-Disposition"] = opts.contentDisposition;
+      if (typeof opts.contentLength === "number") headers["Content-Length"] = String(opts.contentLength);
 
       const resp = await doFetch("PUT", key, { body, headers });
       if (!resp.ok) {
         const text = await resp.text().catch(() => resp.statusText);
         throw new Error(`S3 PUT failed: ${resp.status} ${text}`);
       }
-      const size = body instanceof Uint8Array ? body.byteLength
-        : body instanceof ArrayBuffer ? body.byteLength
-        : body instanceof ReadableStream ? -1 : 0;
-      return { size: size >= 0 ? size : 0, etag: resp.headers.get("etag")?.replace(/"/g, "") || undefined };
+      let size = body instanceof ReadableStream ? 0 : (body as ArrayBuffer | Uint8Array).byteLength;
+      if (!size) size = opts.contentLength ?? 0;
+      if (!size) size = await headSize(key);
+      return { size, etag: resp.headers.get("etag")?.replace(/"/g, "") || undefined };
     },
 
     async get(key, range) {
@@ -387,4 +416,29 @@ export async function createStorageProvider(
   }
   if (!env.r2) throw new Error("Storage: no R2 binding and S3 not configured");
   return createR2Provider(env.r2);
+}
+
+/* ═══════════════════════════════════════════════════════
+ * 全 Worker 共享的 Provider 缓存（admin / public / webdav 同一个实例）
+ * 以存储相关配置做指纹：getSettings 本身有 5 秒 TTL，
+ * 所以管理员改后端最多 5 秒后所有模块一起切过去，无需手动失效钩子。
+ * ═══════════════════════════════════════════════════════ */
+let _cachedProvider: StorageProvider | null = null;
+let _cachedProviderKey = "";
+
+export async function getStorageProvider(env: Env): Promise<StorageProvider> {
+  const s = await getSettings(env);
+  const key = [
+    s.storageProvider,
+    s.s3Endpoint,
+    s.s3Region,
+    s.s3Bucket,
+    s.s3AccessKeyId,
+    s.s3AddressingStyle,
+    s.s3SecretKeyCipher ? s.s3SecretKeyCipher.slice(-12) : "",
+  ].join("|");
+  if (_cachedProvider && _cachedProviderKey === key) return _cachedProvider;
+  _cachedProvider = await createStorageProvider(env, s);
+  _cachedProviderKey = key;
+  return _cachedProvider;
 }
