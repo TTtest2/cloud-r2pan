@@ -79,6 +79,23 @@ npx wrangler login
 
 每加一个 Secret 点 **Save**。
 
+> ⚠️ **一定要用 Secret，不要用上面的 Environment variables（文本变量）。**
+> 每次部署（包括 Workers Builds 自动构建）都会用配置文件里声明的 `vars`
+> **整体覆盖**文本变量；本仓库的 `wrangler.jsonc` 没有声明任何 `vars`，所以放在
+> Environment variables 里的 `admin` 会在每次构建后消失，表现就是"管理员账户又被重置了，
+> 得去后台重新配"。Secrets 是独立存储、跨部署持久，不会被覆盖。
+>
+> 加完自检（故意用错密钥，看回哪种错）：
+>
+> ```bash
+> curl -s -X POST https://<你的域名>/api/admin/login \
+>   -H 'content-type: application/json' -d '{"key":"wrong-on-purpose"}'
+> ```
+>
+> - 回 `401`（管理密钥错误）→ 生效了。
+> - 回 `500` 且提示 `admin is not set` → 没读到，多半是放成了文本变量或名字不对。
+> - 下次自动构建跑完再执行一次同样的命令：仍回 `401` 才算真的稳。
+
 ---
 
 ## 5. 正式部署
