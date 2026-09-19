@@ -9,6 +9,7 @@ import { parseUA } from "./ua";
 import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual, hashWebDAVPassword } from "./crypto";
 import { getStorageProvider as storage } from "./storage";
 import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
+import { applyDisposition, inlineCsp, wantsInline } from "./preview";
 import {
   declaredSize,
   formatMb,
@@ -434,9 +435,16 @@ export async function handleAdminApi(
     const headers = new Headers({
       "content-type": obj.contentType,
       "content-length": String(obj.size),
-      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
       "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "accept-ranges": "bytes",
     });
+    const { inline } = applyDisposition(headers, {
+      mime: obj.contentType,
+      name: file.name,
+      inline: wantsInline(req),
+    });
+    if (inline) headers.set("Content-Security-Policy", inlineCsp());
     if (obj.etag) headers.set("etag", obj.etag);
     return new Response(obj.body, { headers });
   }

@@ -280,6 +280,8 @@ const I18N = {
     maxedTitle: '下载次数已达上限', maxedMsg: '该资源允许下载 {n} 次，名额已用完。',
     downloads: '下载次数', limit: '次数上限', size: '文件大小',
     download: '下载文件',
+    preview: '在线预览',
+    unlockedHint: '已解锁 · 可直接预览或下载',
     protected: '🔒 该分享受密码保护',
     passwordPlaceholder: '输入访问密码', unlock: '解锁下载',
     unlockHint: '输入管理员提供的密码后即可开始下载',
@@ -338,6 +340,8 @@ const I18N = {
     maxedTitle: 'Download Limit Reached', maxedMsg: 'This resource allows {n} downloads and the quota is used up.',
     downloads: 'Downloads', limit: 'Limit', size: 'File Size',
     download: 'Download',
+    preview: 'Preview',
+    unlockedHint: 'Unlocked · preview or download directly',
     protected: '🔒 This share is password-protected',
     passwordPlaceholder: 'Enter access password', unlock: 'Unlock & Download',
     unlockHint: 'Enter the password provided by the administrator to download',
@@ -446,6 +450,15 @@ function fmtTime(ts){
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+// 与 src/preview.ts 的服务端白名单保持一致；只用来决定要不要显示"预览"按钮，
+// 真正放行与否由服务端判定（不符合时自动退回 attachment）。html/svg 一律不预览。
+function canPreview(mime){
+  const m = String(mime||'').split(';')[0].trim().toLowerCase();
+  if(!m || m === 'application/octet-stream' || m === 'text/html' || m === 'image/svg+xml') return false;
+  return /^(image|audio)\//.test(m) || m === 'application/pdf'
+    || /^(text\/(plain|csv|markdown)$)/.test(m)
+    || /^video\/(mp4|webm|ogg|quicktime)$/.test(m);
+}
 
 const token = location.pathname.split('/')[2];
 
@@ -621,6 +634,7 @@ function render(d, siteName, oauthErr, oauthProviders){
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 20h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         ${esc(t('download'))}
       </a>
+      ${canPreview(d.mime) && !d.quota_exceeded && !(oauthEnabled && !oauthAuthed) && !(tsEnabled && tsOnDownload) ? `<a class="btn" id="pv" href="/s/${token}/download?inline=1" target="_blank" rel="noopener" style="margin-top:8px;background:#ffffff;color:#1d2433;border:1px solid rgba(24,34,58,.12);box-shadow:0 2px 8px rgba(24,34,58,.06);font-size:13px">🔍 ${esc(t('preview'))}</a>` : ''}
       ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:#ffffff;color:#1d2433;border:1px solid rgba(24,34,58,.12);box-shadow:0 2px 8px rgba(24,34,58,.06);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       <div class="hint">${esc(t('hint', {site: siteName}))}</div>`}
   `;
@@ -657,6 +671,8 @@ function render(d, siteName, oauthErr, oauthProviders){
     // 即使 JS 被扩展或浏览器策略拦截，按钮依然可用
     const dlCode = getBoundCode();
     if(dlCode) dlEl.href = `/s/${token}/download?code=${encodeURIComponent(dlCode)}`;
+    const pvEl = $('#pv');
+    if(pvEl && dlCode) pvEl.href = `/s/${token}/download?inline=1&code=${encodeURIComponent(dlCode)}`;
     if((oauthEnabled && !oauthAuthed) || (tsEnabled && tsOnDownload) || dlCode){
       dlEl.onclick = (e) => {
         if(oauthEnabled && !oauthAuthed){
@@ -893,6 +909,16 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
       const r = await fetch(`/s/${token}/verify`, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
       let res = {};
       try{ res = await r.json(); }catch{}
+      // 解锁成功后把口令框换成"下载 / 预览"两个按钮 —— attachment 导航不会卸载本页
+      const showUnlocked = (url) => {
+        const box = document.getElementById('pw-box');
+        if(!box) return;
+        const sep = url.includes('?') ? '&' : '?';
+        box.innerHTML = `
+          <div class="pw-hint">${esc(t('unlockedHint'))}</div>
+          <a class="btn" href="${esc(url)}">${esc(t('download'))}</a>
+          ${canPreview(d.mime) ? `<a class="btn" href="${esc(url + sep + 'inline=1')}" target="_blank" rel="noopener" style="margin-top:8px;background:#ffffff;color:#1d2433;border:1px solid rgba(24,34,58,.12);box-shadow:0 2px 8px rgba(24,34,58,.06);font-size:13px">🔍 ${esc(t('preview'))}</a>` : ''}`;
+      };
       if(r.ok && res.url){
         // on_download 模式需要 cf 参数
         if(tsEnabled && tsOnDownload && !res.url.includes('cf=')){
@@ -909,10 +935,12 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
           let dlUrl = res.url + sep + 'cf=' + tk;
           if(code){ const s2 = dlUrl.includes('?') ? '&' : '?'; dlUrl += s2 + 'code=' + encodeURIComponent(code); }
           location.href = dlUrl;
+          showUnlocked(dlUrl);
         } else {
           let dlUrl = res.url;
           if(code){ const s2 = dlUrl.includes('?') ? '&' : '?'; dlUrl += s2 + 'code=' + encodeURIComponent(code); }
           location.href = dlUrl;
+          showUnlocked(dlUrl);
         }
         return;
       }

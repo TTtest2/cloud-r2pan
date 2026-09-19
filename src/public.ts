@@ -7,6 +7,7 @@ import { errorPage, json } from "./pages";
 import { hmacHex, sha256Hex, randomHex, safeEqual, decryptSecret } from "./crypto";
 import { verifyOAuthSession } from "./oauth";
 import { getStorageProvider as storage } from "./storage";
+import { applyDisposition, inlineCsp, wantsInline } from "./preview";
 
 const TOKEN_TTL_MS = 24 * 3600_000; // 授权令牌有效期 24h
 
@@ -577,9 +578,15 @@ async function streamFile(
   headers.set("accept-ranges", "bytes");
   headers.set("cache-control", "no-store");
   const displayName = row.download_name || row.name;
-  headers.set("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(displayName)}`);
   const { addSecurityHeaders } = await import("./pages");
   addSecurityHeaders(headers, { isDownload: true });
+  const { inline } = applyDisposition(headers, {
+    mime: obj.contentType,
+    name: displayName,
+    inline: wantsInline(req),
+  });
+  // 默认下载 CSP 是 default-src 'none'，媒体分片续读与 PDF 会被它自己挡掉
+  if (inline) headers.set("Content-Security-Policy", inlineCsp());
   const servedLen = range ? range.length : obj.size;
   headers.set("content-length", String(servedLen));
   if (range) {
