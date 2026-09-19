@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "tail": "wrangler tail"
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild \"test/*.ts\" --bundle --platform=node --format=esm --outdir=.dev/test --out-extension:.js=.mjs --log-level=warning && node --input-type=module -e \"import fs from 'node:fs'; import url from 'node:url'; const files=fs.readdirSync('.dev/test').filter(f=>f.endsWith('.mjs')); if(!files.length) throw new Error('no test bundles emitted'); for (const f of files) await import(url.pathToFileURL('.dev/test/' + f).href)\""
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260903.1",
+    "esbuild": "^0.28.1",
     "typescript": "^5.6.0",
     "wrangler": "^4.0.0"
   }
