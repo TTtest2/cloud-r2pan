@@ -173,6 +173,7 @@ body.batch-on .wrap { padding-bottom: 104px; }
   box-shadow: 0 1px 3px rgba(24,34,58,.06);
 }
 .btn:hover { background: #f3f5f9; transform: translateY(-1px); }
+a.btn { text-decoration: none; }
 .btn:active { transform: scale(.96); }
 .btn.primary { background: linear-gradient(180deg,#5b9cf5,#2f6fed); border-color: transparent; color: #fff;
   box-shadow: 0 8px 22px rgba(47,111,237,.30); }
@@ -413,7 +414,7 @@ const I18N = {
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
     dropDesc: '单文件最大 100 MB（Workers 请求限制）· 直传 R2 对象存储',
-    allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', del: '删除',
+    allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', dlFile: '下载', del: '删除',
     newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
     folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
     uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除文件夹「{name}」？其中的文件将移回根目录，不会被删除。',
@@ -717,7 +718,7 @@ const I18N = {
     // 文件
     dropTitle: 'Drop files here or click to upload',
     dropDesc: 'Max 100 MB per file (Workers limit) · Stored directly in R2',
-    allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', del: 'Delete',
+    allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', dlFile: 'Download', del: 'Delete',
     newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
     folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
     uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete folder "{name}"? Files inside will be moved back to Root, not deleted.',
@@ -1442,7 +1443,7 @@ async function loadFiles(){
       <div class="section-title"><h2>📁 ${esc(viewName)}（${files.length}）</h2></div>
       ${files.length ? `
       <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th class="ck-cell">${ckHead}</th><th>${esc(t('colName'))}</th><th>${esc(t('colFolder'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th class="ck-cell">${ckHead}</th><th>${esc(t('colName'))}</th><th>${esc(t('colFolder'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:230px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
             <td class="ck-cell">${ckbox(f.id)}${ficon(f.name)}</td>
@@ -1453,6 +1454,7 @@ async function loadFiles(){
             <td class="num">${f.download_count}</td>
             <td class="num">${fmtTime(f.uploaded_at)}</td>
             <td><div class="actions-cell">
+              <a class="btn sm" href="/api/admin/files/${encodeURIComponent(f.id)}/download">⬇ ${esc(t('dlFile'))}</a>
               <button class="btn sm primary" data-share="${f.id}">${esc(t('createShare'))}</button>
               <button class="btn sm danger" data-del="${f.id}" data-name="${esc(f.name)}">${esc(t('del'))}</button>
             </div></td>

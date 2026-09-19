@@ -395,6 +395,27 @@ export async function handleAdminApi(
     return json({ files: results ?? [] });
   }
 
+  // ── 管理员直接下载（不生成分享/直链，也不受公开下载的那套限制约束） ──
+  const fileDlMatch = /^\/api\/admin\/files\/([^/]+)\/download$/.exec(path);
+  if (fileDlMatch && method === "GET") {
+    const file = await env.db
+      .prepare("SELECT name, key FROM files WHERE id = ?1")
+      .bind(fileDlMatch[1])
+      .first<{ name: string; key: string }>();
+    if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
+    const st = await storage(env);
+    const obj = await st.get(file.key);
+    if (!obj) return json({ error: msg(req, "存储对象已不存在", "Object missing in storage") }, 404);
+    const headers = new Headers({
+      "content-type": obj.contentType,
+      "content-length": String(obj.size),
+      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      "cache-control": "no-store",
+    });
+    if (obj.etag) headers.set("etag", obj.etag);
+    return new Response(obj.body, { headers });
+  }
+
   // ── 上传文件（原始流式 body，文件名放 X-File-Name 头） ──
   if (path === "/api/admin/upload" && method === "POST") {
     const rawName = req.headers.get("x-file-name");
