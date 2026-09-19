@@ -417,7 +417,7 @@ const I18N = {
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', dlFile: '下载', del: '删除',
     newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
     folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
-    uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除文件夹「{name}」？其中的文件将移回根目录，不会被删除。',
+    uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除空文件夹「{name}」？只有不含文件和子目录的文件夹才能删除。',
     folderDeleted: '文件夹已删除', folderCreatedToast: '已创建文件夹「{name}」',
     tooLarge: '「{name}」超过 100 MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
@@ -721,7 +721,7 @@ const I18N = {
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', dlFile: 'Download', del: 'Delete',
     newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
     folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
-    uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete folder "{name}"? Files inside will be moved back to Root, not deleted.',
+    uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete the empty folder "{name}"? Only folders without files or subfolders can be deleted.',
     folderDeleted: 'Folder deleted', folderCreatedToast: 'Folder "{name}" created',
     tooLarge: '"{name}" exceeds the 100 MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
@@ -1418,7 +1418,7 @@ async function loadFiles(){
   try { ({ folders } = await api('/api/admin/folders')); } catch {}
   const q = filesFolder ? `?folder=${encodeURIComponent(filesFolder)}` : '';
   const { files } = await api('/api/admin/files' + q);
-  const fmap = Object.fromEntries(folders.map(f => [f.id, f.name]));
+  const fmap = Object.fromEntries(folders.map(f => [f.id, String(f.path || f.name).replace(/^\//, '')]));
   const targetName = (filesFolder && filesFolder !== 'root' && fmap[filesFolder]) ? fmap[filesFolder] : t('uploadToRoot');
   const viewName = filesFolder === 'root' ? t('folderFilterRoot') : (filesFolder && fmap[filesFolder]) ? `📁 ${fmap[filesFolder]}` : t('folderFilterAll');
   $('#view').innerHTML = `
@@ -1427,7 +1427,7 @@ async function loadFiles(){
       <select id="fo-filter" style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <option value="">${esc(t('folderFilterAll'))}</option>
         <option value="root">${esc(t('folderFilterRoot'))}</option>
-        ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(f.name)}（${f.file_count}）</option>`).join('')}
+        ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(fmap[f.id])}（${f.file_count}）</option>`).join('')}
       </select>
       ${fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
       <span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>
@@ -1471,7 +1471,7 @@ async function loadFiles(){
         <select id="bb-move" class="sel" title="${esc(t('batchMovePh'))}">
           <option value="" selected>${esc(t('batchMovePh'))}</option>
           <option value="__root">${esc(t('folderFilterRoot'))}</option>
-          ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(f.name)}</option>`).join('')}
+          ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(fmap[f.id])}</option>`).join('')}
         </select>
         <button class="btn sm danger" id="bb-del">🗑 ${esc(t('batchDel'))}</button>
       </div>
@@ -1485,7 +1485,9 @@ async function loadFiles(){
   if(delBtn) delBtn.onclick = async () => {
     const name = fmap[filesFolder] || '';
     if(!(await confirmDialog(t('deleteFolderT'), t('deleteFolderD', {name})))) return;
-    await api(`/api/admin/folders/${encodeURIComponent(filesFolder)}`, { method:'DELETE' });
+    try {
+      await api(`/api/admin/folders/${encodeURIComponent(filesFolder)}`, { method:'DELETE' });
+    } catch(e) { toast(e.message, 'err'); return; }
     toast(t('folderDeleted'));
     filesFolder = null;
     loadFiles();

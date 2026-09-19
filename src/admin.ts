@@ -8,6 +8,7 @@ import { hashPassword } from "./public";
 import { parseUA } from "./ua";
 import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual } from "./crypto";
 import { getStorageProvider as storage } from "./storage";
+import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -327,43 +328,63 @@ export async function handleAdminApi(
     });
   }
 
-  // ── 文件夹：列表 ──────────────────────────────────
+  // ── 文件夹：列表（整棵树平铺，带完整路径，便于按位置筛选与展示） ──
   if (path === "/api/admin/folders" && method === "GET") {
     const { results } = await env.db.prepare(
-      `SELECT fo.id, fo.name, fo.created_at,
+      `SELECT fo.id, fo.name, fo.parent_id, fo.created_at,
               (SELECT COUNT(*) FROM files fl WHERE fl.folder_id = fo.id) AS file_count,
-              (SELECT COALESCE(SUM(fl.size), 0) FROM files fl WHERE fl.folder_id = fo.id) AS total_size
-       FROM folders fo ORDER BY fo.created_at DESC`
-    ).all();
-    return json({ folders: results ?? [] });
+              (SELECT COALESCE(SUM(fl.size), 0) FROM files fl WHERE fl.folder_id = fo.id) AS total_size,
+              (SELECT COUNT(*) FROM folders ch WHERE ch.parent_id = fo.id) AS subfolder_count
+       FROM folders fo`
+    ).all<{ id: string; name: string; parent_id: string | null; created_at: number; file_count: number; total_size: number; subfolder_count: number }>();
+    const tree = await getFolderTree(env);
+    const folders = (results ?? [])
+      .map((f) => ({ ...f, path: tree.pathOf(f.id) ?? "/" + f.name }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    return json({ folders });
   }
 
-  // ── 文件夹：创建 ──────────────────────────────────
+  // ── 文件夹：创建（parent_id 省略 = 顶层） ──────────────────
   if (path === "/api/admin/folders" && method === "POST") {
-    const body = await req.json().catch(() => null) as { name?: string } | null;
+    const body = await req.json().catch(() => null) as { name?: string; parent_id?: string | null } | null;
     const raw = (body?.name ?? "").trim();
     if (!raw) return json({ error: msg(req, "文件夹名不能为空", "Folder name is required") }, 400);
     const name = sanitizeName(raw);
-    try {
-      const id = randomId(10);
-      await env.db.prepare("INSERT INTO folders(id, name, created_at) VALUES(?1, ?2, ?3)")
-        .bind(id, name, Date.now()).run();
-      return json({ ok: true, id, name }, 201);
-    } catch {
-      return json({ error: msg(req, "同名文件夹已存在", "A folder with this name already exists") }, 409);
+
+    let parentId: string | null = null;
+    if (body?.parent_id) {
+      const tree = await getFolderTree(env);
+      if (!tree.get(body.parent_id)) {
+        return json({ error: msg(req, "父目录不存在", "Parent folder not found") }, 404);
+      }
+      parentId = body.parent_id;
     }
+    const created = await createFolder(env, parentId, name);
+    if (!created) {
+      return json({ error: msg(req, "同一位置下已有同名文件夹", "A folder with this name already exists here") }, 409);
+    }
+    return json({ ok: true, id: created.id, name: created.name, parent_id: created.parent_id }, 201);
   }
 
-  // ── 文件夹：删除（文件移回根目录，不删文件） ────────
+  // ── 文件夹：删除（只允许空目录；非空要把内容先移走） ────────
   const folderMatch = /^\/api\/admin\/folders\/([^/]+)$/.exec(path);
   if (folderMatch && method === "DELETE") {
     const folderId = decodeURIComponent(folderMatch[1]);
     const folder = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(folderId).first();
     if (!folder) return json({ error: msg(req, "文件夹不存在", "Folder not found") }, 404);
-    await env.db.batch([
-      env.db.prepare("UPDATE files SET folder_id = NULL WHERE folder_id = ?1").bind(folderId),
-      env.db.prepare("DELETE FROM folders WHERE id = ?1").bind(folderId),
-    ]);
+    const busy = await env.db.prepare(
+      `SELECT (SELECT COUNT(*) FROM files WHERE folder_id = ?1) AS files,
+              (SELECT COUNT(*) FROM folders WHERE parent_id = ?1) AS subfolders`
+    ).bind(folderId).first<{ files: number; subfolders: number }>();
+    if ((busy?.files ?? 0) > 0 || (busy?.subfolders ?? 0) > 0) {
+      return json({
+        error: msg(req, "文件夹非空，请先把里面的文件和子目录移走或删掉", "Folder is not empty — move or delete its contents first"),
+        files: busy?.files ?? 0,
+        subfolders: busy?.subfolders ?? 0,
+      }, 409);
+    }
+    await env.db.prepare("DELETE FROM folders WHERE id = ?1").bind(folderId).run();
+    invalidateFolderTree();
     return json({ ok: true });
   }
 
