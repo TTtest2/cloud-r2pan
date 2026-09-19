@@ -149,6 +149,21 @@ body {
   font-size: 11px; font-weight: 800; letter-spacing: -.02em;
   background: #f3f5f9; border: 1px solid rgba(24,34,58,.10); vertical-align: middle; }
 
+/* ── 批量选择 ─────────────────────────── */
+.ck { width: 18px; height: 18px; margin: 0 7px 0 0; flex: none; cursor: pointer;
+  vertical-align: middle; accent-color: #2f6fed; }
+.tbl tbody tr.picked > td { background: rgba(47,111,237,.09); }
+.batch-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 70;
+  display: none; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
+  max-width: calc(100vw - 28px); padding: 10px 14px; border-radius: 999px;
+  background: #ffffff; border: 1px solid rgba(24,34,58,.12); box-shadow: 0 14px 34px rgba(16,24,40,.18); }
+.batch-bar.on { display: flex; animation: batchIn .3s cubic-bezier(.22,1.1,.36,1) both; }
+.batch-bar .bb-row { display: contents; }
+.batch-bar .n { font-size: 13px; font-weight: 650; color: var(--text-2); white-space: nowrap; }
+@keyframes batchIn { from { opacity: 0; transform: translate(-50%, 18px); } to { opacity: 1; transform: translate(-50%, 0); } }
+/* 批量条浮在底部时，给内容留出空间，避免盖住最后一行的操作按钮 */
+body.batch-on .wrap { padding-bottom: 104px; }
+
 /* ── 按钮 ─────────────────────────────── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -351,6 +366,15 @@ body {
   .group .row { padding: 13px 14px; }
   .group .row input[type=text] { width: 150px; }
   .group .row input[type=number] { width: 96px; }
+  .ck-cell .ficon { display: none; }
+  .ck { width: 20px; height: 20px; }
+  .batch-bar { bottom: calc(14px + env(safe-area-inset-bottom)); gap: 8px; padding: 11px 12px;
+    border-radius: 22px; max-width: calc(100vw - 16px); flex-direction: column; align-items: stretch; }
+  .batch-bar .bb-row { display: flex; align-items: center; gap: 8px; }
+  .batch-bar .n { flex: 1; font-size: 12.5px; }
+  .batch-bar .btn { padding: 8px 12px; font-size: 13px; }
+  .batch-bar .sel { flex: 1; min-width: 0; }
+  body.batch-on .wrap { padding-bottom: 142px; }
 }
 </style>
 </head>
@@ -444,6 +468,15 @@ const I18N = {
     // 文件删除
     deleteFileT: '删除文件', deleteFileD: '确定删除「{name}」？其所有分享链接和下载记录也会一并删除。',
     fileDeleted: '文件已删除',
+    // 批量选择与批量操作
+    colSelect: '选择', selAll: '全选', clearSel: '取消选择', selectedN: '已选 {n} 项',
+    batchDel: '删除选中', batchDelT: '批量删除文件',
+    batchDelD: '确定删除选中的 {n} 个文件？它们的分享链接、直链和下载记录会一并删除，且无法恢复。',
+    batchDeleted: '已删除 {n} 个文件', batchSkipped: '（{n} 个已不存在）',
+    batchMovePh: '移动到…', movedN: '已移动 {n} 个文件',
+    batchRevoke: '撤销选中', batchRevokeT: '批量撤销分享链接',
+    batchRevokeD: '确定撤销选中的 {n} 条分享链接？文件本身会保留。',
+    batchRevoked: '已撤销 {n} 条链接',
     loadingErr: '加载失败',
     // 分享密码显示
     showPassword: '显示', hidePassword: '隐藏', copyPassword: '复制密码',
@@ -736,6 +769,15 @@ const I18N = {
     // 文件删除
     deleteFileT: 'Delete file', deleteFileD: 'Delete "{name}"? All its share links and logs will also be deleted.',
     fileDeleted: 'File deleted',
+    // 批量选择与批量操作
+    colSelect: 'Select', selAll: 'Select all', clearSel: 'Clear', selectedN: '{n} selected',
+    batchDel: 'Delete selected', batchDelT: 'Delete files',
+    batchDelD: 'Delete the {n} selected files? Their share links, direct links and download logs will be removed permanently.',
+    batchDeleted: 'Deleted {n} files', batchSkipped: ' ({n} were already gone)',
+    batchMovePh: 'Move to…', movedN: 'Moved {n} files',
+    batchRevoke: 'Revoke selected', batchRevokeT: 'Revoke share links',
+    batchRevokeD: 'Revoke the {n} selected share links? The files themselves are kept.',
+    batchRevoked: 'Revoked {n} links',
     loadingErr: 'Failed to load',
     // 分享密码显示
     showPassword: 'Show', hidePassword: 'Hide', copyPassword: 'Copy password',
@@ -1231,6 +1273,8 @@ async function showApp(){
 
 function switchTab(tab){
   currentTab = tab;
+  selFiles.clear(); selShares.clear();
+  document.body.classList.remove('batch-on');
   $$('#tabs button').forEach(b => {
     const on = b.dataset.tab === tab;
     b.classList.toggle('active', on);
@@ -1320,6 +1364,45 @@ async function loadOverview(){
   $('#goto-logs').onclick = () => switchTab('logs');
 }
 
+/* ═══════════ 批量选择（文件 / 分享共用） ═══════════ */
+const selFiles = new Set();
+const selShares = new Set();
+
+// 勾选框放进已有首格，不新增列——窄屏靠 nth-child 隐藏列，多一列会整体错位
+const ckbox = id => `<input type="checkbox" class="ck" data-ck="${esc(id)}" aria-label="${esc(t('colSelect'))}">`;
+const ckHead = `<input type="checkbox" class="ck" id="ck-all" aria-label="${esc(t('selAll'))}" title="${esc(t('selAll'))}">`;
+
+/** 接好全选 / 单选 / 取消选择，返回同步函数；批量条上的业务按钮由调用方挂 */
+function wireSelection(set, ids){
+  const bar = $('#batch-bar');
+  if(!bar) return () => {};
+  const visible = new Set(ids);
+  for(const id of [...set]) if(!visible.has(id)) set.delete(id);
+  const all = $('#ck-all');
+  const refresh = () => {
+    $$('#view [data-ck]').forEach(cb => {
+      const on = set.has(cb.dataset.ck);
+      cb.checked = on;
+      cb.closest('tr').classList.toggle('picked', on);
+    });
+    $('#bb-txt').textContent = t('selectedN', { n: set.size });
+    bar.classList.toggle('on', set.size > 0);
+    document.body.classList.toggle('batch-on', set.size > 0);
+    if(all){
+      all.checked = set.size > 0 && ids.every(id => set.has(id));
+      all.indeterminate = set.size > 0 && !all.checked;
+    }
+  };
+  if(all) all.onchange = () => { ids.forEach(id => all.checked ? set.add(id) : set.delete(id)); refresh(); };
+  $$('#view [data-ck]').forEach(cb => cb.onchange = () => {
+    cb.checked ? set.add(cb.dataset.ck) : set.delete(cb.dataset.ck);
+    refresh();
+  });
+  $('#bb-clear').onclick = () => { set.clear(); refresh(); };
+  refresh();
+  return refresh;
+}
+
 /* ═══════════ 文件 ═══════════ */
 let filesFolder = null; // null=全部 | 'root'=根目录 | 其他=文件夹 id
 
@@ -1353,10 +1436,10 @@ async function loadFiles(){
       <div class="section-title"><h2>📁 ${esc(viewName)}（${files.length}）</h2></div>
       ${files.length ? `
       <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colFolder'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th class="ck-cell">${ckHead}</th><th>${esc(t('colName'))}</th><th>${esc(t('colFolder'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
-            <td>${ficon(f.name)}</td>
+            <td class="ck-cell">${ckbox(f.id)}${ficon(f.name)}</td>
             <td class="name-cell" title="${esc(f.name)}">${esc(f.name)}</td>
             <td>${f.folder_id && fmap[f.folder_id] ? `📁 ${esc(fmap[f.folder_id])}` : '—'}</td>
             <td class="num">${fmtSize(f.size)}</td>
@@ -1370,11 +1453,25 @@ async function loadFiles(){
           </tr>`).join('')}
         </tbody>
       </table></div>` : `<div class="empty"><div class="icon">📭</div>${esc(t('noFiles'))}</div>`}
+    </div>
+    <div class="batch-bar" id="batch-bar">
+      <div class="bb-row">
+        <span class="n" id="bb-txt"></span>
+        <button class="btn sm" id="bb-clear">✕ ${esc(t('clearSel'))}</button>
+      </div>
+      <div class="bb-row">
+        <select id="bb-move" class="sel" title="${esc(t('batchMovePh'))}">
+          <option value="" selected>${esc(t('batchMovePh'))}</option>
+          <option value="__root">${esc(t('folderFilterRoot'))}</option>
+          ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(f.name)}</option>`).join('')}
+        </select>
+        <button class="btn sm danger" id="bb-del">🗑 ${esc(t('batchDel'))}</button>
+      </div>
     </div>`;
 
   const sel = $('#fo-filter');
   sel.value = filesFolder || '';
-  sel.onchange = () => { filesFolder = sel.value || null; loadFiles(); };
+  sel.onchange = () => { filesFolder = sel.value || null; selFiles.clear(); loadFiles(); };
   $('#fo-new').onclick = openNewFolderModal;
   const delBtn = $('#fo-del');
   if(delBtn) delBtn.onclick = async () => {
@@ -1400,6 +1497,32 @@ async function loadFiles(){
     toast(t('fileDeleted'));
     loadFiles();
   });
+
+  wireSelection(selFiles, files.map(f => f.id));
+  const mv = $('#bb-move');
+  mv.onchange = async () => {
+    const target = mv.value;
+    const ids = [...selFiles];
+    if(!target || !ids.length) return;
+    try {
+      const r = await api('/api/admin/files/batch-move', { method:'POST',
+        body: JSON.stringify({ ids, folder_id: target === '__root' ? null : target }) });
+      toast(t('movedN', { n: r.moved }));
+      selFiles.clear();
+      loadFiles();
+    } catch(e){ toast(e.message, 'err'); mv.value = ''; }
+  };
+  $('#bb-del').onclick = async () => {
+    const ids = [...selFiles];
+    if(!ids.length) return;
+    if(!(await confirmDialog(t('batchDelT'), t('batchDelD', { n: ids.length })))) return;
+    try {
+      const r = await api('/api/admin/files/batch-delete', { method:'POST', body: JSON.stringify({ ids }) });
+      toast(t('batchDeleted', { n: r.deleted }) + (r.skipped ? t('batchSkipped', { n: r.skipped }) : ''));
+      selFiles.clear();
+      loadFiles();
+    } catch(e){ toast(e.message, 'err'); }
+  };
 }
 
 function openNewFolderModal(){
@@ -1540,12 +1663,12 @@ async function loadShares(){
         <button class="btn sm" id="cleanup-shares">${esc(t('cleanup'))}</button></div>
       ${shares.length ? `
       <div style="overflow-x:auto"><table class="tbl tbl-shares">
-        <thead><tr><th>${esc(t('colFile'))}</th><th>${esc(t('colLink'))}</th><th>${esc(t('passwordCol'))}</th><th>${esc(t('colDownloads'))} / ${esc(t('colExpires'))}</th><th>${esc(t('colCreated'))}</th><th>${esc(t('colExpires'))}</th><th>${esc(t('colStatus'))}</th><th style="width:80px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th class="name-cell ck-cell">${ckHead}${esc(t('colFile'))}</th><th>${esc(t('colLink'))}</th><th>${esc(t('passwordCol'))}</th><th>${esc(t('colDownloads'))} / ${esc(t('colExpires'))}</th><th>${esc(t('colCreated'))}</th><th>${esc(t('colExpires'))}</th><th>${esc(t('colStatus'))}</th><th style="width:80px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${shares.map(s => {
           const pw = s.has_password ? (s.password_plain || '') : null;
           return `
           <tr>
-            <td class="name-cell">${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
+            <td class="name-cell ck-cell">${ckbox(s.id)}${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
             <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#2563eb;text-decoration:none">/s/${s.id}</a><br><span style="font-size:10px;color:rgba(29,36,51,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" class="dl-link" style="color:#b45309;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button></td>
             <td class="mono">${pw ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
               <button class="btn sm" data-pw="${s.id}" data-val="${esc(pw)}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
@@ -1559,6 +1682,13 @@ async function loadShares(){
         }).join('')}
         </tbody>
       </table></div>` : `<div class="empty"><div class="icon">🔗</div>${esc(t('noShares'))}</div>`}
+    </div>
+    <div class="batch-bar" id="batch-bar">
+      <div class="bb-row">
+        <span class="n" id="bb-txt"></span>
+        <button class="btn sm" id="bb-clear">✕ ${esc(t('clearSel'))}</button>
+        <button class="btn sm danger" id="bb-rv">⛔ ${esc(t('batchRevoke'))}</button>
+      </div>
     </div>`;
   $('#cleanup-shares').onclick = async () => {
     if(!(await confirmDialog(t('confirmCleanupT'), t('confirmCleanupD'), false))) return;
@@ -1572,6 +1702,18 @@ async function loadShares(){
     toast(t('shareRevoked'));
     loadShares();
   });
+  wireSelection(selShares, shares.map(s => s.id));
+  $('#bb-rv').onclick = async () => {
+    const ids = [...selShares];
+    if(!ids.length) return;
+    if(!(await confirmDialog(t('batchRevokeT'), t('batchRevokeD', { n: ids.length })))) return;
+    try {
+      const r = await api('/api/admin/shares/batch-revoke', { method:'POST', body: JSON.stringify({ ids }) });
+      toast(t('batchRevoked', { n: r.revoked }) + (r.skipped ? t('batchSkipped', { n: r.skipped }) : ''));
+      selShares.clear();
+      loadShares();
+    } catch(e){ toast(e.message, 'err'); }
+  };
   // 密码显示/隐藏
   $$('[data-pw]').forEach(b => {
     b.onclick = () => {

@@ -39,6 +39,22 @@ async function readJson<T>(req: Request): Promise<Partial<T>> {
   }
 }
 
+/** 单次批量操作的上限：D1 的 IN(...) 参数个数与 R2 并发删除都需要有界 */
+const BATCH_LIMIT = 100;
+
+/** 规范化批量接口的 ids：只接受字符串、去重去空、截断到上限 */
+function normalizeIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (id && id.length <= 64) seen.add(id);
+    if (seen.size >= BATCH_LIMIT) break;
+  }
+  return [...seen];
+}
+
 /** 文件名清洗：去路径分隔符 / 控制字符，限长 */
 function sanitizeName(name: string): string {
   const cleaned = name
@@ -397,6 +413,62 @@ export async function handleAdminApi(
     return json({ ok: true, id, name, size: resultSize }, 201);
   }
 
+  // ── 批量删除文件（连带分享、直链、日志与存储对象） ──
+  if (path === "/api/admin/files/batch-delete" && method === "POST") {
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = normalizeIds(body.ids);
+    if (!ids.length) return json({ error: msg(req, "请先选择文件", "No files selected") }, 400);
+    const idPh = ids.map((_, i) => `?${i + 1}`).join(", ");
+    const rows = await env.db
+      .prepare(`SELECT id, key FROM files WHERE id IN (${idPh})`)
+      .bind(...ids)
+      .all<{ id: string; key: string }>();
+    const found = rows.results ?? [];
+    if (!found.length) return json({ error: msg(req, "文件不存在或已被删除", "Files not found") }, 404);
+    const foundIds = found.map((f) => f.id);
+    const ph = foundIds.map((_, i) => `?${i + 1}`).join(", ");
+    await env.db.batch([
+      env.db.prepare(`DELETE FROM shares WHERE file_id IN (${ph})`).bind(...foundIds),
+      env.db.prepare(`DELETE FROM direct_links WHERE file_id IN (${ph})`).bind(...foundIds),
+      env.db.prepare(`DELETE FROM download_logs WHERE file_id IN (${ph})`).bind(...foundIds),
+      env.db.prepare(`DELETE FROM files WHERE id IN (${ph})`).bind(...foundIds),
+    ]);
+    // 存储对象删除较慢，放到 waitUntil 里串行清理，不阻塞响应
+    ctx.waitUntil(
+      (async () => {
+        const st = await storage(env);
+        for (const key of found.map((f) => f.key)) {
+          try {
+            await st.delete(key);
+          } catch {
+            // 存储删除失败不影响 DB 结果，静默跳过
+          }
+        }
+      })()
+    );
+    return json({ ok: true, deleted: foundIds.length, skipped: ids.length - foundIds.length });
+  }
+
+  // ── 批量移动文件到文件夹（folder_id 为空 = 移回根目录） ──
+  if (path === "/api/admin/files/batch-move" && method === "POST") {
+    const body = await readJson<{ ids?: string[]; folder_id?: string | null }>(req);
+    const ids = normalizeIds(body.ids);
+    if (!ids.length) return json({ error: msg(req, "请先选择文件", "No files selected") }, 400);
+    const rawFolder = typeof body.folder_id === "string" ? body.folder_id.trim() : "";
+    let folderId: string | null = null;
+    if (rawFolder) {
+      const fo = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(rawFolder).first<{ id: string }>();
+      if (!fo) return json({ error: msg(req, "目标文件夹不存在", "Target folder not found") }, 400);
+      folderId = fo.id;
+    }
+    const ph = ids.map((_, i) => `?${i + 2}`).join(", ");
+    const r = await env.db
+      .prepare(`UPDATE files SET folder_id = ?1 WHERE id IN (${ph})`)
+      .bind(folderId, ...ids)
+      .run();
+    return json({ ok: true, moved: r.meta.changes ?? 0, folder_id: folderId });
+  }
+
   // ── 删除文件（连带存储对象、分享、日志） ──────────
   const fileMatch = /^\/api\/admin\/files\/([^/]+)$/.exec(path);
   if (fileMatch && method === "DELETE") {
@@ -545,6 +617,16 @@ export async function handleAdminApi(
     const r = await env.db.prepare("DELETE FROM shares WHERE id = ?1").bind(shareMatch[1]).run();
     if ((r.meta.changes ?? 0) === 0) return json({ error: msg(req, "分享不存在", "Share not found") }, 404);
     return json({ ok: true });
+  }
+
+  // ── 批量撤销分享（只删链接，文件保留） ────────────
+  if (path === "/api/admin/shares/batch-revoke" && method === "POST") {
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = normalizeIds(body.ids);
+    if (!ids.length) return json({ error: msg(req, "请先选择分享链接", "No shares selected") }, 400);
+    const ph = ids.map((_, i) => `?${i + 1}`).join(", ");
+    const r = await env.db.prepare(`DELETE FROM shares WHERE id IN (${ph})`).bind(...ids).run();
+    return json({ ok: true, revoked: r.meta.changes ?? 0, skipped: ids.length - (r.meta.changes ?? 0) });
   }
 
   // ── 编辑市场字段（开关 + 标题 + 描述） ────────────
