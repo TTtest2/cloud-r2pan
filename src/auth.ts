@@ -25,6 +25,10 @@ export async function createSession(env: Env, secure = false): Promise<string> {
 
 /** 校验会话 Cookie，返回是否有效 */
 export async function verifySession(req: Request, env: Env): Promise<boolean> {
+  // 没配 admin 密钥时必须回"未登录"，而不是把 undefined 塞进 HMAC 抛异常
+  // —— 后者会让带着旧 Cookie 的每个后台请求都变成 500，把"该配密钥"这个事实
+  //    伪装成"服务器坏了"
+  if (!env.admin) return false;
   const token = getCookie(req, COOKIE_NAME);
   if (!token) return false;
   const dot = token.indexOf(".");
