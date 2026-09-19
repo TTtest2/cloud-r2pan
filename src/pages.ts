@@ -143,12 +143,12 @@ export function errorPage(
 html, body { height: 100%; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  padding: 24px; color: #1d2433; overflow: hidden; position: relative;
+  min-height: 100vh; min-height: 100dvh; display: flex; align-items: center; justify-content: center;
+  padding: 24px 24px 76px; color: #1d2433; position: relative;
   background: #f5f6f8;
 }
 .card {
-  position: relative; width: 100%; max-width: 420px; text-align: center;
+  position: relative; width: 100%; max-width: 420px; margin: auto; text-align: center;
   padding: 56px 36px 44px; border-radius: 32px;
   background: #ffffff;
   border: 1px solid rgba(24,34,58,.10);
@@ -167,6 +167,14 @@ h1 { font-size: 24px; font-weight: 700; letter-spacing: -.02em; margin-bottom: 1
 p { font-size: 15px; line-height: 1.65; color: rgba(29,36,51,.62); }
 .code { margin-top: 22px; font-size: 13px; color: rgba(29,36,51,.45); font-family: ui-monospace, "SF Mono", monospace; }
 .brand { position: fixed; bottom: 22px; left: 0; right: 0; text-align: center; font-size: 13px; color: rgba(29,36,51,.45); letter-spacing: .08em; }
+@media (max-width: 480px) {
+  body { padding: 14px 14px 70px; }
+  .card { padding: 34px 20px 30px; border-radius: 26px; }
+  .icon { width: 66px; height: 66px; border-radius: 20px; font-size: 32px; margin-bottom: 18px; }
+  h1 { font-size: 20px; }
+  p { font-size: 14px; }
+  .brand { bottom: 16px; font-size: 12px; }
+}
 </style>
 </head>
 <body>

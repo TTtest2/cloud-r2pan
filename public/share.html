@@ -8,8 +8,8 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
-  min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 24px; color: #1d2433; overflow: hidden; position: relative;
+  min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px 24px 76px; color: #1d2433; position: relative;
   background: #f5f6f8;
   -webkit-tap-highlight-color: transparent;
 }
@@ -20,7 +20,7 @@ body {
 @keyframes drift { from { transform: translate(0, 0) scale(1); } to { transform: translate(6vw, -5vh) scale(1.12); } }
 
 .card {
-  position: relative; width: 100%; max-width: 440px;
+  position: relative; width: 100%; max-width: 440px; margin: auto;
   padding: 48px 36px 40px; border-radius: 36px; text-align: center;
   background: #ffffff;
   border: 1px solid rgba(24,34,58,.10);
@@ -162,11 +162,13 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
   position: fixed; inset: 0; z-index: 100;
   background: rgba(20,26,40,.45);
   display: flex; align-items: center; justify-content: center;
+  overflow-y: auto; padding: 20px 14px;
   animation: fadeIn .2s both;
 }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .code-modal {
-  width: min(400px, 92vw); padding: 26px 24px 22px; border-radius: 28px;
+  position: relative;
+  width: min(400px, 100%); margin: auto; padding: 26px 24px 22px; border-radius: 28px;
   background: #ffffff;
   border: 1px solid rgba(24,34,58,.10);
   box-shadow: 0 24px 60px rgba(24,34,58,.22);
@@ -199,7 +201,7 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
   margin-top: 18px; display: flex; flex-direction: column; gap: 10px;
 }
 .code-input-row input {
-  width: 100%; padding: 13px 16px; border-radius: 14px; font-size: 14px;
+  width: 100%; padding: 13px 16px; border-radius: 14px; font-size: 16px;
   font-family: ui-monospace,'SF Mono',monospace; color: #1d2433; outline: none;
   background: #eef1f5; border: 1px solid rgba(24,34,58,.10);
   letter-spacing: .04em; text-align: center;
@@ -229,6 +231,21 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
 .code-query-result.err { background: rgba(220,38,38,.08); border-color: rgba(220,38,38,.24); color: #dc2626; }
 .code-progress { margin-top: 8px; height: 3px; background: rgba(24,34,58,.10); border-radius: 2px; overflow: hidden; }
 .code-progress i { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg,#0f9d58,#2563eb); }
+
+/* ═══════ 手机端 ═══════ */
+@media (max-width: 480px) {
+  body { padding: 14px 14px 72px; }
+  .card { padding: 34px 20px 30px; border-radius: 30px; }
+  .file-icon { width: 88px; height: 88px; border-radius: 26px; margin-bottom: 20px; }
+  .file-icon .ext { font-size: 22px; }
+  h1 { font-size: 18.5px; }
+  .stats { gap: 8px; }
+  .stat { padding: 13px 6px; border-radius: 18px; }
+  .stat .v { font-size: 18px; }
+  .btn { padding: 16px; font-size: 16px; border-radius: 20px; }
+  .code-modal { border-radius: 24px; padding: 24px 18px 20px; }
+  .brand { padding: 0 70px 0 14px; }
+}
 </style>
 </head>
 <body>

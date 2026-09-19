@@ -10,7 +10,7 @@ html,body{min-height:100%}
 body{
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
   color:#1d2433;background:#f5f6f8;
-  padding:24px 20px 80px;min-height:100vh;position:relative;overflow-x:hidden;
+  padding:24px 20px 80px;min-height:100vh;min-height:100dvh;position:relative;
 }
 .orb{display:none}
 
@@ -72,6 +72,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-.02em;background:linear-gradie
 }
 .heat.popular{background:rgba(194,65,12,.10);border-color:rgba(194,65,12,.26);color:#c2410c}
 .heat.hot{background:rgba(220,38,38,.08);border-color:rgba(220,38,38,.24);color:#dc2626}
+.card:has(.heat) .card-head{padding-right:76px}
 
 .empty{grid-column:1/-1;text-align:center;padding:80px 20px;animation:rise .5s cubic-bezier(.22,1.2,.36,1) both}
 .empty .emoji{font-size:60px;margin-bottom:16px;opacity:.8}
@@ -98,6 +99,39 @@ footer a{color:#2563eb;text-decoration:none}
 
 .lang-btn{margin-left:10px;padding:4px 13px;border-radius:11px;border:1px solid rgba(24,34,58,.10);background:#ffffff;color:#1d2433;font-size:12px;cursor:pointer;transition:all .15s}
 .lang-btn:hover{background:#eef1f5;color:#1d2433}
+.brand > div{min-width:0}
+
+@media (max-width: 560px) {
+  body{padding:16px 12px 56px}
+  header{margin-bottom:22px}
+  .brand{gap:9px;margin-bottom:16px}
+  .brand-icon{width:36px;height:36px;border-radius:11px;font-size:18px}
+  h1{font-size:21px;overflow-wrap:anywhere}
+  .subtitle{font-size:13px}
+  .lang-btn{margin-left:auto;flex:none}
+  .toolbar{gap:8px}
+  .search{flex:1 1 100%;min-width:0}
+  .search input{font-size:16px;padding:13px 42px 13px 15px}
+  .sort{flex:1 1 100%}
+  .sort select{font-size:16px;min-width:0;width:100%;padding:13px 40px 13px 15px}
+  .stats{gap:6px 12px;font-size:12.5px}
+  .grid{gap:12px}
+  .card{padding:16px;border-radius:18px}
+  .card:has(.heat) .card-head{padding-right:72px}
+  .card-head{gap:11px;margin-bottom:11px}
+  .icon{width:42px;height:42px;border-radius:12px;font-size:18px}
+  .title{font-size:15px}
+  .desc{font-size:12.5px}
+  .meta{display:block}
+  .meta-left{gap:6px}
+  .meta > span:last-child{display:inline-block;margin-top:6px}
+  .pagination{gap:6px;margin-top:22px}
+  .pagination button{min-width:34px;height:34px;padding:0 10px;font-size:13px}
+  .pagination .info{margin:0 2px;font-size:12px}
+  .empty{padding:48px 16px}
+  .empty .emoji{font-size:44px}
+  .empty h3{font-size:18px}
+}
 </style>
 </head>
 <body>
