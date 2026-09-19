@@ -1237,8 +1237,12 @@ export async function handleAdminApi(
     const th = num(body.turnstile_threshold);
     if (th !== null) patch.turnstile_threshold = String(Math.floor(th));
     if (typeof body.turnstile_sitekey_override === "string") {
-      // 允许清空
-      patch.turnstile_sitekey_override = body.turnstile_sitekey_override.trim();
+      // 允许清空；sitekey 会被分享页写进 HTML 属性，只接受纯字母数字形态
+      const sk = body.turnstile_sitekey_override.trim();
+      if (sk !== "" && !/^[A-Za-z0-9_-]{10,100}$/.test(sk)) {
+        return json({ error: "invalid_turnstile_sitekey" }, 400);
+      }
+      patch.turnstile_sitekey_override = sk;
     }
     // Turnstile Secret —— 如果 Modal 里传了新密码则加密存；空字符串则清掉；__keep__ 表示保留
     if (typeof body.turnstile_secret === "string") {

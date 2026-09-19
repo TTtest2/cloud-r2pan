@@ -107,7 +107,7 @@ export async function handleOAuthProviders(req: Request, env: Env): Promise<Resp
 export async function handleOAuthStart(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const providerDbId = url.searchParams.get("provider") || "";
-  const redirectTo = url.searchParams.get("redirect") || "/";
+  const redirectTo = localRedirect(url.searchParams.get("redirect") ?? "");
 
   const settings = await getSettings(env);
   if (!settings.oauthEnabled) {
@@ -223,13 +223,11 @@ export async function handleOAuthCallback(req: Request, env: Env): Promise<Respo
   const setCookie = setCookieParts.join("; ");
   const clearRedirect = "cd_oauth_redirect=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
 
-  return new Response(null, {
-    status: 302,
-    headers: {
-      location: originalRedirect,
-      "set-cookie": [setCookie, clearRedirect].join(", "),
-    },
-  });
+  const headers = new Headers();
+  headers.set("location", localRedirect(originalRedirect));
+  headers.append("set-cookie", setCookie);
+  headers.append("set-cookie", clearRedirect);
+  return new Response(null, { status: 302, headers });
 }
 
 /* ═══════════ GET /oauth/session ═══════════ */
@@ -264,6 +262,18 @@ export async function handleOAuthLogout(req: Request): Promise<Response> {
 }
 
 /* ═══════════ 辅助函数 ═══════════ */
+
+/** 跳转目标只允许站内绝对路径；//host、/\\host、带 origin 的 URL 一律回落到 "/" */
+export function localRedirect(raw: string): string {
+  const BASE = "https://pan.local";
+  let u: URL;
+  try {
+    u = new URL(raw || "/", BASE);
+  } catch {
+    return "/";
+  }
+  return u.origin === BASE ? u.pathname + u.search : "/";
+}
 
 function parseCookie(header: string | null, name: string): string {
   if (!header) return "";

@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "typecheck": "tsc --noEmit",
-    "test": "esbuild \"test/*.ts\" --bundle --platform=node --format=esm --outdir=.dev/test --out-extension:.js=.mjs --log-level=warning && node -e \"const fs=require('node:fs'),cp=require('node:child_process');const files=fs.readdirSync('.dev/test').filter(f=>f.endsWith('.mjs'));if(!files.length)throw new Error('no test bundles emitted');let bad=0;for(const f of files){console.log('=== '+f);if(cp.spawnSync(process.execPath,['.dev/test/'+f],{stdio:'inherit'}).status!==0){bad++;console.error('FAILED '+f);}}if(bad)process.exit(1);\""
+    "test": "esbuild \"test/*.ts\" --bundle --platform=node --format=esm --outdir=.dev/test --out-extension:.js=.mjs --loader:.html=text --log-level=warning && node -e \"const fs=require('node:fs'),cp=require('node:child_process');const files=fs.readdirSync('.dev/test').filter(f=>f.endsWith('.mjs'));if(!files.length)throw new Error('no test bundles emitted');let bad=0;for(const f of files){console.log('=== '+f);if(cp.spawnSync(process.execPath,['.dev/test/'+f],{stdio:'inherit'}).status!==0){bad++;console.error('FAILED '+f);}}if(bad)process.exit(1);\""
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260903.1",

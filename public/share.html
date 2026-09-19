@@ -469,7 +469,7 @@ function loadTurnstileScript(onload){
  * 返回 Promise<string> —— token 字符串。
  */
 async function renderTurnstile(containerEl, sitekey){
-  containerEl.innerHTML = '<div class="ts-wrap"><div class="ts-box" data-sitekey="'+sitekey+'"></div></div>';
+  containerEl.innerHTML = '<div class="ts-wrap"><div class="ts-box" data-sitekey="'+esc(sitekey)+'"></div></div>';
   loadTurnstileScript();
   // 等待 window.turnstile 出现
   await new Promise(resolve => {
