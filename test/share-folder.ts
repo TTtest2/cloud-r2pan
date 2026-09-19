@@ -100,6 +100,11 @@ class Db {
 
   private run(sql: string, binds: any[], mode: string): any {
     this.sqlLog.push(sql);
+    // 真 D1 会拒绝"占位符个数 ≠ 绑定值个数"，假库必须一样严格
+    const numbered = new Set([...sql.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])));
+    if (numbered.size && numbered.size !== binds.length) {
+      throw new Error(`占位符与绑定不匹配（${numbered.size} vs ${binds.length}）: ${sql}`);
+    }
     /* ensureSchema 冷启动 */
     if (/sqlite_master/.test(sql)) return /name='settings'/.test(sql) ? { name: "settings" } : { sql: NEW_TABLE_SQL };
     if (/SELECT value FROM settings WHERE key = 'migration_version'/.test(sql)) return { value: "9999" };
@@ -142,7 +147,9 @@ class Db {
     if (/^UPDATE shares SET download_count = download_count \+ 1/.test(sql)) {
       const [id, max] = binds;
       const s = this.shares.find((x) => x.id === id);
-      if (s && s.download_count < Number(max)) {
+      if (!s) return { meta: { changes: 0 } };
+      // 没有上限的分享只计数（单绑定），有上限的才带 download_count < ?2 守卫
+      if (max === undefined || s.download_count < Number(max)) {
         s.download_count++;
         return { meta: { changes: 1 } };
       }
@@ -366,6 +373,14 @@ async function main() {
     const s = newShare(db, { folder_id: "root", max_downloads: 5 });
     const before = await pub(db, `/s/${s.id}/download?file=nope`);
     check("无效 file 不烧名额", before.status === 404 && db.shares[0].download_count === 0, String(db.shares[0].download_count));
+  }
+  {
+    const db = fresh();
+    const s = newShare(db, { folder_id: "root" }); // 无上限
+    const ok = await pub(db, `/s/${s.id}/download?file=fa`);
+    check("无上限的分享也会计数", ok.status === 200 && db.shares[0].download_count === 1, String(db.shares[0].download_count));
+    const bad = await pub(db, `/s/${s.id}/download?file=nope`);
+    check("无上限时被拒的请求不计数", bad.status === 404 && db.shares[0].download_count === 1, String(db.shares[0].download_count));
   }
 
   console.log("\n[5] 文件分享的既有行为不受影响");

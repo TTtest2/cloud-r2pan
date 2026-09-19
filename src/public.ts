@@ -541,6 +541,10 @@ export async function handleDownload(
     if ((r.meta.changes ?? 0) === 0)
       return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
         { zh: `名额已用完。`, en: `Quota used up.` });
+  } else {
+    // 无上限也要计数，否则后台与市场的"已下载次数"永远是 0
+    await env.db.prepare(`UPDATE shares SET download_count = download_count + 1 WHERE id = ?1`)
+      .bind(token).run();
   }
 
   return streamFile(req, env, ctx, target, token, "share");
@@ -643,6 +647,9 @@ export async function handleDirectDownload(
     if ((r.meta.changes ?? 0) === 0)
       return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
         { zh: `名额已用完。`, en: `Quota used up.` });
+  } else {
+    await env.db.prepare(`UPDATE direct_links SET download_count = download_count + 1 WHERE id = ?1`)
+      .bind(token).run();
   }
 
   return streamFile(req, env, ctx, row, token, "direct");
