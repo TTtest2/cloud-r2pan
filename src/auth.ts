@@ -88,6 +88,30 @@ export function rateLimitRetryAfter(ip: string, scope: string): number {
   return rec && rec.resetAt > Date.now() ? Math.ceil((rec.resetAt - Date.now()) / 1000) : 60;
 }
 
+/* ═══════════ 认证失败计数 ═══════════
+ * 与 rateLimit 的区别：只数失败的尝试。
+ * WebDAV 一次挂载就是几十次成功请求，若把成功也计进配额会把正常用户挡在门外；
+ * 而超限时真正要省的是"口令派生"那段 CPU，所以判定与计数分开。
+ */
+const AUTH_FAIL_WINDOW_MS = 60_000;
+
+export function authThrottled(ip: string, scope: string, limit: number): boolean {
+  const rec = attempts.get(`authfail|${scope}|${ip}`);
+  return !!rec && rec.resetAt > Date.now() && rec.count >= limit;
+}
+
+export function noteAuthFailure(ip: string, scope: string): void {
+  const key = `authfail|${scope}|${ip}`;
+  const now = Date.now();
+  const rec = attempts.get(key);
+  if (!rec || rec.resetAt < now) attempts.set(key, { count: 1, resetAt: now + AUTH_FAIL_WINDOW_MS });
+  else rec.count++;
+}
+
+export function clearAuthFailures(ip: string, scope: string): void {
+  attempts.delete(`authfail|${scope}|${ip}`);
+}
+
 /** 获取客户端真实 IP（Cloudflare 环境下 CF-Connecting-IP 不可伪造） */
 export function clientIp(req: Request): string {
   return (

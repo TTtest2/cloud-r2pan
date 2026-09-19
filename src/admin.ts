@@ -6,7 +6,7 @@ import { checkAdminKey, createSession, verifySession, clientIp, rateLimit, requi
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
-import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual } from "./crypto";
+import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual, hashWebDAVPassword } from "./crypto";
 import { getStorageProvider as storage } from "./storage";
 import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
 
@@ -1226,6 +1226,10 @@ export async function handleAdminApi(
       oauth_has_enabled_providers: enabledProviders.length > 0,
       // IP 白名单
       admin_ips: s.adminIps,
+      // WebDAV（只报状态，不下发哈希）
+      webdav_enabled: s.webdavEnabled,
+      webdav_username: s.webdavUsername,
+      webdav_has_password: !!s.webdavPasswordHash,
       // 下载市场首页
       home_redirect_market: s.homeRedirectMarket,
       // 激活码浮动按钮
@@ -1295,6 +1299,25 @@ export async function handleAdminApi(
     // 管理员 IP 白名单
     if (typeof body.admin_ips === "string") {
       patch.admin_ips = body.admin_ips.trim();
+    }
+
+    // ── WebDAV 挂载 ──
+    if (typeof body.webdav_enabled === "boolean") patch.webdav_enabled = body.webdav_enabled ? "1" : "0";
+    if (typeof body.webdav_username === "string") {
+      const u = body.webdav_username.trim().slice(0, 64);
+      if (u && !/^[A-Za-z0-9._@-]+$/.test(u)) {
+        return json({ error: msg(req, "用户名只允许字母、数字与 . _ @ -", "Username may only contain letters, digits and . _ @ -") }, 400);
+      }
+      if (u) patch.webdav_username = u;
+    }
+    if (typeof body.webdav_password === "string") {
+      // 空串 = 清掉口令（没有口令时 WebDAV 一律拒绝，等于关掉访问能力）
+      if (body.webdav_password === "") patch.webdav_password_hash = "";
+      else if (body.webdav_password.length < 8 || body.webdav_password.length > 256) {
+        return json({ error: msg(req, "WebDAV 口令需 8-256 位", "WebDAV password must be 8-256 characters") }, 400);
+      } else {
+        patch.webdav_password_hash = await hashWebDAVPassword(body.webdav_password);
+      }
     }
 
     // 下载市场作为首页

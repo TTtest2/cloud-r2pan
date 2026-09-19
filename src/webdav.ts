@@ -12,14 +12,18 @@
  *   MOVE      —— 移动 / 重命名 文件或目录
  *   COPY      —— 复制文件（目录复制未实现，返回 501）
  *
- * 认证：HTTP Basic Auth，用户名密码在管理后台设置（settings.webdav_username / webdav_password_hash）
+ * 认证：HTTP Basic Auth，凭据在管理后台"设置 → WebDAV 挂载"里配置。
+ *   口令以 PBKDF2-SHA256 存储；每个 IP 每分钟允许 8 次失败，超限后直接拒绝
+ *   而不再做口令派生（省 CPU）；验证通过的凭据在本 isolate 缓存 60 秒，
+ *   避免挂载后的每个请求都重跑一遍拉伸。
  * 存储：对象走 StorageProvider（R2 / S3），元数据走 D1 —— 文件行存 files（folder_id 指向目录），
  *      目录是 folders 的 parent_id 树；URL 里的路径由 src/folders.ts 现场解析，不是存储事实。
  */
 
 import type { Env } from "./types";
-import { getSettings } from "./settings";
-import { sha256Hex, safeEqual, randomHex } from "./crypto";
+import { getSettings, updateSettings } from "./settings";
+import { sha256Hex, hashWebDAVPassword, verifyWebDAVPassword } from "./crypto";
+import { clientIp, authThrottled, noteAuthFailure, clearAuthFailures } from "./auth";
 import { getStorageProvider as storage } from "./storage";
 import { randomId } from "./db";
 import {
@@ -92,23 +96,48 @@ function parseBasicAuth(authHeader: string | null): { username: string; password
 }
 
 /** 验证 WebDAV Basic Auth */
+const WEBDAV_FAIL_LIMIT = 8;          // 每个 IP 每分钟允许的失败次数
+const CRED_CACHE_TTL_MS = 60_000;
+/** 凭据 → 过期时间戳。口令派生是 PBKDF2 五万轮，而挂载后每个请求都要认证。 */
+const credCache = new Map<string, number>();
+
 async function checkWebDAVAuth(req: Request, env: Env): Promise<boolean> {
   const settings = await getSettings(env);
   if (!settings.webdavEnabled) return false;
-  if (!settings.webdavPasswordHash) return false;
+  const stored = settings.webdavPasswordHash;
+  if (!stored) return false;
 
   const auth = parseBasicAuth(req.headers.get("authorization"));
+  // 没带凭据是正常挑战流程，不能计成失败
   if (!auth) return false;
-  if (auth.username !== settings.webdavUsername) return false;
 
-  // 密码校验：salt:sha256(salt:password)
-  const stored = settings.webdavPasswordHash;
-  const i = stored.indexOf(":");
-  if (i < 0) return false;
-  const salt = stored.slice(0, i);
-  const want = stored.slice(i + 1);
-  const got = await sha256Hex(salt + ":" + auth.password);
-  return safeEqual(want, got);
+  // 键里带上存储哈希的尾部指纹：管理员换口令后指纹变化，旧缓存自动失效
+  const cacheKey = (await sha256Hex(auth.username + ":" + auth.password)) + "|" + stored.slice(-16);
+  const cachedUntil = credCache.get(cacheKey);
+  if (cachedUntil && cachedUntil > Date.now()) return true; // 已验证过，不必再派生
+
+  const ip = clientIp(req);
+  if (authThrottled(ip, "webdav", WEBDAV_FAIL_LIMIT)) return false; // 超限后连派生都不做
+
+  if (auth.username !== settings.webdavUsername) {
+    noteAuthFailure(ip, "webdav");
+    return false;
+  }
+
+  const { ok, needUpgrade } = await verifyWebDAVPassword(stored, auth.password);
+  if (!ok) {
+    noteAuthFailure(ip, "webdav");
+    return false;
+  }
+  clearAuthFailures(ip, "webdav");
+  credCache.set(cacheKey, Date.now() + CRED_CACHE_TTL_MS);
+
+  // 老格式（单轮 sha256，可离线爆破）或迭代数偏低时，顺手就地升级
+  if (needUpgrade) {
+    const upgraded = await hashWebDAVPassword(auth.password);
+    await updateSettings(env, { webdav_password_hash: upgraded }).catch(() => {});
+  }
+  return true;
 }
 
 /* ═══════════ 目录模型（folders + files.folder_id） ═══════════ */

@@ -55,6 +55,64 @@ export function randomHex(n = 16): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/* ═══════════ WebDAV 口令拉伸 ═══════════ */
+
+/**
+ * workerd 在生产环境对 PBKDF2 的迭代数设了 100_000 的硬上限
+ * （CPU 计时无法打断 BoringSSL 的运算，只能事前限制迭代数），
+ * 所以这里取 50_000：远低于上限，单次派生约几十毫秒，够劝退在线爆破。
+ */
+const WEBDAV_ITERATIONS = 50_000;
+const MAX_ITERATIONS = 100_000;
+const HEX_RE = /^[0-9a-f]+$/i;
+
+/** PBKDF2-SHA256，hex 编码 */
+export async function pbkdf2Hex(password: string, saltHex: string, iterations: number): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
+    "deriveBits",
+  ]);
+  const salt = Uint8Array.from(saltHex.match(/.{2}/g) ?? [], (h) => parseInt(h, 16));
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+    key,
+    256
+  );
+  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 新格式：pbkdf2$<迭代数>$<盐>$<哈希> */
+export async function hashWebDAVPassword(password: string): Promise<string> {
+  const salt = randomHex(16);
+  const hash = await pbkdf2Hex(password, salt, WEBDAV_ITERATIONS);
+  return `pbkdf2$${WEBDAV_ITERATIONS}$${salt}$${hash}`;
+}
+
+/** 校验口令；needUpgrade 表示存储格式该换（老格式，或迭代数低于当前标准） */
+export async function verifyWebDAVPassword(
+  stored: string,
+  password: string
+): Promise<{ ok: boolean; needUpgrade: boolean }> {
+  if (!stored) return { ok: false, needUpgrade: false };
+
+  if (stored.startsWith("pbkdf2$")) {
+    const [, iters, salt, hash] = stored.split("$");
+    const n = Number(iters);
+    if (!n || n < 1 || n > MAX_ITERATIONS || !HEX_RE.test(salt ?? "") || !HEX_RE.test(hash ?? "")) {
+      return { ok: false, needUpgrade: true }; // 存的东西坏了，让管理员重设一次
+    }
+    const got = await pbkdf2Hex(password, salt, n);
+    return { ok: safeEqual(got, hash), needUpgrade: n < WEBDAV_ITERATIONS };
+  }
+
+  // 老格式 salt:sha256(salt:password) —— 单轮散列可被离线爆破，验对后立刻升级
+  const i = stored.indexOf(":");
+  if (i < 0) return { ok: false, needUpgrade: false };
+  const salt = stored.slice(0, i);
+  const want = stored.slice(i + 1);
+  const got = await sha256Hex(salt + ":" + password);
+  return { ok: safeEqual(want, got), needUpgrade: true };
+}
+
 /**
  * 用 admin key 派生出 AES-GCM 密钥 —— 加密分享密码明文用。
  * 密钥派生: HKDF-SHA256(info = "share-password-v1")

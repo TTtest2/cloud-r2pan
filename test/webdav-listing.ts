@@ -12,7 +12,7 @@
  *   node .dev/webdav-listing.mjs
  */
 import { handleWebDAV } from "../src/webdav";
-import { sha256Hex } from "../src/crypto";
+import { hashWebDAVPassword } from "../src/crypto";
 import { invalidateSettingsCache } from "../src/settings";
 import { invalidateFolderTree } from "../src/folders";
 
@@ -292,7 +292,7 @@ async function main() {
     { key: "webdav_enabled", value: "1" },
     { key: "webdav_username", value: "webdav" },
     { key: "webdav_root_path", value: "/" },
-    { key: "webdav_password_hash", value: `s1:${await sha256Hex("s1:" + PASSWORD)}` },
+    { key: "webdav_password_hash", value: await hashWebDAVPassword(PASSWORD) },
   ];
   invalidateSettingsCache();
 

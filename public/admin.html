@@ -519,6 +519,10 @@ const I18N = {
     ipWhitelistOn: '已启用',
     ipWhitelistOff: '未启用（任何 IP 都能访问 /admin）',
     ipWhitelistHint: '格式：每行一个条目 或 用逗号分隔。例：192.168.1.1, 10.0.0.0/8, 203.0.113.0/24',
+    webdav: 'WebDAV 挂载', webdavD: '开启后可用 macOS 访达 / Windows 资源管理器 / Raidrive 等把网盘直接挂载成本地磁盘。用户名和口令就是访问凭据，请设为长随机值。',
+    webdavUser: '挂载用户名', webdavPw: '挂载口令', webdavPwSet: '已设置（留空表示不修改）', webdavPwPh: '至少 8 位',
+    webdavPwClear: '清除口令', webdavOff: '未开启：/webdav 一律返回 401', webdavOn: '已开启',
+    webdavMount: '挂载地址：{url}', webdavSavedToast: 'WebDAV 设置已保存',
     // 下载市场首页
     homeRedirectMarket: '下载市场作为首页',
     homeRedirectMarketD: '访客直接访问域名根路径 / 时，自动跳转到下载市场页面（/market）而不是管理后台（/admin）',
@@ -823,6 +827,10 @@ const I18N = {
     ipWhitelistOn: 'Enabled',
     ipWhitelistOff: 'Not enabled (any IP can access /admin)',
     ipWhitelistHint: 'Format: one per line OR comma-separated. e.g. 192.168.1.1, 10.0.0.0/8, 203.0.113.0/24',
+    webdav: 'WebDAV Mount', webdavD: 'When enabled, mount the drive from Finder / Explorer / Raidrive. The username and password below are the credentials — use a long random value.',
+    webdavUser: 'Mount username', webdavPw: 'Mount password', webdavPwSet: 'Set (leave blank to keep)', webdavPwPh: 'at least 8 chars',
+    webdavPwClear: 'Clear password', webdavOff: 'Off — /webdav returns 401', webdavOn: 'On',
+    webdavMount: 'Mount URL: {url}', webdavSavedToast: 'WebDAV settings saved',
     // Marketplace as home
     homeRedirectMarket: 'Marketplace as Homepage',
     homeRedirectMarketD: 'When visitors land on your root domain /, redirect them to the marketplace (/market) instead of the admin panel (/admin)',
@@ -2511,6 +2519,25 @@ async function loadSettings(){
         </div>
       </div>
     </div>
+    <!-- WebDAV 挂载 -->
+    <div class="glass group">
+      <div class="row">
+        <div class="info"><div class="t">🗂️ ${esc(t('webdav'))}</div><div class="d">${esc(t('webdavD'))}</div></div>
+        <label class="switch">
+          <input type="checkbox" id="st-webdav-on" ${s.webdav_enabled ? 'checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="st-webdav-user" value="${esc(s.webdav_username ?? 'webdav')}" placeholder="${esc(t('webdavUser'))}" maxlength="64" autocomplete="off" style="flex:1;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
+        <input type="password" id="st-webdav-pw" value="" placeholder="${s.webdav_has_password ? esc(t('webdavPwSet')) : esc(t('webdavPwPh'))}" maxlength="256" autocomplete="new-password" style="flex:1;padding:10px 12px;border-radius:12px;font-size:13px;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
+        ${s.webdav_has_password ? `<button class="btn sm" id="st-webdav-clear">${esc(t('webdavPwClear'))}</button>` : ''}
+      </div>
+      <div class="tip" style="margin-top:8px">
+        ${s.webdav_enabled ? `<span style="color:#0f9d58">${esc(t('webdavOn'))}</span>` : `<span style="color:#b45309">${esc(t('webdavOff'))}</span>`}
+        · ${esc(t('webdavMount', { url: location.origin + '/webdav' }))}
+      </div>
+    </div>
     <!-- 下载市场作为首页 -->
     <div class="glass group">
       <div class="row">
@@ -2654,13 +2681,25 @@ async function loadSettings(){
       ban_hours: Number($('#st-banhours').value) || 0,
       oauth_enabled: $('#oauth-enabled').checked,
       admin_ips: $('#st-adminips').value.trim(),
+      webdav_enabled: $('#st-webdav-on').checked,
+      webdav_username: $('#st-webdav-user').value.trim(),
       home_redirect_market: $('#st-home-market').checked,
       codes_floating_button_enabled: $('#st-codes-float').checked,
       codes_floating_button_position: $('#st-codes-pos').value,
     };
+    const wdPw = $('#st-webdav-pw').value;
+    if (wdPw) body.webdav_password = wdPw; // 留空 = 保持原口令不变
     const r = await api('/api/admin/settings', { method:'PUT', body: JSON.stringify(body) });
     toast(r && r.unbanned > 0 ? t('unbannedN', { n: r.unbanned }) : t('saved'));
     loadSettings();
+  });
+  $('#st-webdav-clear')?.addEventListener('click', async () => {
+    if (!(await confirmDialog(t('webdavPwClear'), t('webdavOff'), false))) return;
+    try {
+      await api('/api/admin/settings', { method:'PUT', body: JSON.stringify({ webdav_password: '' }) });
+      toast(t('webdavSavedToast'));
+      loadSettings();
+    } catch(e) { toast(e.message, 'err'); }
   });
 
   // ═══════════════════════════════════
