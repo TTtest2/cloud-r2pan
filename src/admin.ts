@@ -279,7 +279,7 @@ export async function handleAdminApi(
     const s = await getSettings(env);
     const [files, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned] =
       await Promise.all([
-        env.db.prepare("SELECT COUNT(*) AS c FROM files").first<{ c: number }>(),
+        env.db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM files").first<{ c: number; bytes: number }>(),
         env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>(),
         env.db.prepare(
           "SELECT COUNT(*) AS c FROM shares WHERE revoked = 0 AND (expires_at IS NULL OR expires_at > ?1) AND (max_downloads IS NULL OR download_count < max_downloads)"
@@ -328,6 +328,11 @@ export async function handleAdminApi(
         downloads_today: todayStat?.downloads ?? 0,
         bytes_today: todayStat?.bytes ?? 0,
         banned: banned?.c ?? 0,
+      },
+      storage: {
+        // files.size 记录的是 put 时 R2 返回的真实对象大小，累加即已用存储
+        bytes: Number(files?.bytes ?? 0) || 0,
+        files: files?.c ?? 0,
       },
       chart,
       recent: recent.results ?? [],

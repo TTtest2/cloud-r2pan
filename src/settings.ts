@@ -271,21 +271,27 @@ export async function updateSettings(env: Env, patch: Partial<Record<string, str
 /**
  * 记录一次下载产生的流量（跨月自动重置）。
  *
- * ── Bug #1 彻底修复（上一次修复只消除了 read-compute-write，
- *    但在 00:00 跨月瞬间仍存在竞态） ──
+ * ── 修复 1：累加语句命中 0 行 ──────────────────────────────
+ * 原先用裸 `UPDATE settings SET value = ... WHERE key = 'traffic_used_bytes'`。
+ * 这一行只在管理员点过「重置本月流量」时才存在，从未创建过的站点
+ * UPDATE 匹配 0 行 → 下载多少流量都永远是 0。
+ * 现在改成 `INSERT ... ON CONFLICT DO UPDATE`，行不存在就直接创建。
  *
- * 根因：SELECT 检测 crossMonth → JS 分支选 SQL → batch 写入，
- * 三步之间没有事务隔离。并发请求同时读到"上月"就都走 crossMonth 分支，
- * 最后一个覆盖前值，丢流量。
+ * ── 修复 2：跨月永远不清零 ────────────────────────────────
+ * 原先 batch 的第一步就把 traffic_month 写成本月，第二步再用
+ * `CASE WHEN traffic_month = 本月` 判断跨月 —— 读到的月份刚被自己改过，
+ * ELSE '0' 分支不可能命中。
+ * 现在的顺序是：① 按**旧的** traffic_month 条件清零 → ② 缺行时回填 →
+ * ③ 原子累加 → ④ 才把 traffic_month 同步成本月。
  *
- * 方案：
- *   1. 跨月判断完全内联到单个 UPDATE 语句的 SQL 子查询里，
- *      数据库自己读 traffic_month 做 CASE WHEN，不再经过 JS 分支
- *   2. 三个 SQL 包在 transaction batch 中，保证原子执行
- *   3. 完全去掉前置 SELECT，消除竞态窗口
+ * D1 batch 内语句在同一事务里顺序执行，累加由 SQL 自己完成（不经过
+ * JS 读-改-写），并发下不会丢量；跨月时多个请求都执行 ① 也是幂等的。
  *
- * 无论多少并发，同一事务内 CASE WHEN 读到的 traffic_month 是一致的，
- * 要么全部累加（同月），要么全部重置（跨月）。
+ * ── 修复 3：一次性回填历史流量 ──────────────────────────
+ * traffic_stats（每日汇总）走的是 upsert，从来没被 bug 影响过，是可信的
+ * 事实来源。若 traffic_used_bytes 行缺失（等价于管理员从未点过「重置本月
+ * 流量」，因为重置会同时写入两行），就用它反推出当月真实已用流量补回一次，
+ * 避免修复上线后本月流量从 0 重新数起。
  */
 export async function addTraffic(env: Env, bytes: number): Promise<void> {
   const now = new Date();
@@ -293,24 +299,36 @@ export async function addTraffic(env: Env, bytes: number): Promise<void> {
   const day = now.toISOString().slice(0, 10);
 
   await env.db.batch([
-    // ① 同步 traffic_month 到当月（幂等：同月时 value 不变）
+    // ① 跨月清零：只在 traffic_month 不是本月时把已用流量归零
+    //    （行不存在时本句命中 0 行，由 ③ 负责创建）
+    env.db.prepare(
+      `UPDATE settings SET value = '0'
+       WHERE key = 'traffic_used_bytes'
+         AND (SELECT value FROM settings WHERE key = 'traffic_month') IS NOT ?1`
+    ).bind(month),
+
+    // ② 一次性回填：行不存在 = 管理员从未点过「重置本月流量」（重置会同时写入两行），
+    //    说明历史流量是被上面修复的那个 bug 丢掉的，按 traffic_stats 的当月合计补回。
+    //    放在 ① 之后、③ 之前，保证只在真正缺行时生效一次。
+    env.db.prepare(
+      `INSERT INTO settings(key, value)
+       SELECT 'traffic_used_bytes', COALESCE(
+         (SELECT SUM(bytes) FROM traffic_stats WHERE day >= ?1), 0)
+       WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'traffic_used_bytes')`
+    ).bind(`${month}-01`),
+
+    // ③ 原子累加，行不存在则创建
+    env.db.prepare(
+      `INSERT INTO settings(key, value) VALUES('traffic_used_bytes', ?1)
+       ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(settings.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)`
+    ).bind(String(bytes)),
+
+    // ④ 月份同步必须在 ① 之后
     env.db.prepare(
       "INSERT INTO settings(key, value) VALUES('traffic_month', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     ).bind(month),
 
-    // ② 更新 traffic_used_bytes —— 跨月逻辑完全内联在 SQL 里
-    //    同月：累加旧值；跨月：从 0 开始加
-    env.db.prepare(
-      `UPDATE settings SET value = CAST(
-        CASE
-          WHEN (SELECT value FROM settings WHERE key = 'traffic_month') = ?1
-          THEN COALESCE((SELECT value FROM settings WHERE key = 'traffic_used_bytes'), '0')
-          ELSE '0'
-        END AS INTEGER) + ?2 AS TEXT)
-       WHERE key = 'traffic_used_bytes'`
-    ).bind(month, String(bytes)),
-
-    // ③ traffic_stats 每日汇总（原本就是原子累加，保持不变）
+    // ⑤ traffic_stats 每日汇总（原本就是原子累加，保持不变）
     env.db.prepare(
       "INSERT INTO traffic_stats(day, bytes, downloads) VALUES(?1, ?2, 1) ON CONFLICT(day) DO UPDATE SET bytes = bytes + excluded.bytes, downloads = downloads + excluded.downloads"
     ).bind(day, bytes),

@@ -398,7 +398,8 @@ const I18N = {
     tabOverview: '概览', tabFiles: '文件', tabShares: '分享', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置',
     // 概览
     statTraffic: '本月流量', usedPercent: '已用 {n}% · 跨月自动重置', noLimit: '未设置限额',
-    statDownloads: '累计下载', todayN: '今日 {n} 次', statFiles: '文件总数', storedR2: '存储于 R2 对象存储',
+    statDownloads: '累计下载', todayN: '今日 {n} 次',
+    statStorage: '已用存储', storageFoot: '{n} 个文件 · R2 对象存储',
     statShares: '分享链接', sharesFoot: '有效 {a} 个 · 封禁 IP {b} 个',
     chartTitle: '近 14 天下载趋势', recentTitle: '最近下载', viewAll: '查看全部', noLogsYet: '还没有下载记录',
     quotaBannerT: '流量已达预设限额，下载服务已自动暂停',
@@ -701,7 +702,8 @@ const I18N = {
     tabOverview: 'Overview', tabFiles: 'Files', tabShares: 'Shares', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings',
     // 概览
     statTraffic: 'Monthly Traffic', usedPercent: '{n}% used · resets monthly', noLimit: 'No limit set',
-    statDownloads: 'Total Downloads', todayN: '{n} today', statFiles: 'Files', storedR2: 'Stored in R2 object storage',
+    statDownloads: 'Total Downloads', todayN: '{n} today',
+    statStorage: 'Storage Used', storageFoot: '{n} files · R2 object storage',
     statShares: 'Share Links', sharesFoot: '{a} active · {b} banned IPs',
     chartTitle: 'Downloads · Last 14 Days', recentTitle: 'Recent Downloads', viewAll: 'View all', noLogsYet: 'No downloads yet',
     quotaBannerT: 'Traffic quota reached — downloads auto-paused',
@@ -1320,14 +1322,14 @@ async function loadOverview(){
         <div class="foot">${s.traffic.limit>0?esc(t('usedPercent',{n:s.traffic.percent})):esc(t('noLimit'))}</div>
       </div>
       <div class="stat-card glass">
+        <div class="label">💾 ${esc(t('statStorage'))}</div>
+        <div class="value">${fmtSize(s.storage?.bytes ?? 0)}</div>
+        <div class="foot">${esc(t('storageFoot', { n: s.storage?.files ?? c.files }))}</div>
+      </div>
+      <div class="stat-card glass">
         <div class="label">⬇️ ${esc(t('statDownloads'))}</div>
         <div class="value">${c.downloads_total}</div>
         <div class="foot">${esc(t('todayN',{n:c.downloads_today}))} · ${fmtSize(c.bytes_today)}</div>
-      </div>
-      <div class="stat-card glass">
-        <div class="label">📁 ${esc(t('statFiles'))}</div>
-        <div class="value">${c.files}</div>
-        <div class="foot">${esc(t('storedR2'))}</div>
       </div>
       <div class="stat-card glass">
         <div class="label">🔗 ${esc(t('statShares'))}</div>
