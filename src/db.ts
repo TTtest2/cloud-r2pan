@@ -197,12 +197,19 @@ const MIGRATION_STATEMENTS: string[] = [
   // ═══════════ WebDAV 虚拟目录 ═══════════
   "ALTER TABLE files ADD COLUMN path TEXT NOT NULL DEFAULT '/'",
   "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
-  // ═══════════ 管理页文件夹（平铺单层，独立于 WebDAV 的 path/directories） ═══════════
-  "CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)",
+  // ═══════════ 目录树（顶层 parent_id IS NULL；同层不重名，跨层可重名） ═══════════
+  "CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at INTEGER NOT NULL)",
   "ALTER TABLE files ADD COLUMN folder_id TEXT",
   "CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id)",
   // ═══════════ 分享派生直链（shares.direct_id → direct_links.id） ═══════════
   "ALTER TABLE shares ADD COLUMN direct_id TEXT",
+  // ═══════════ 目录模型统一 Phase 1：folders 升级为 parent_id 树 ═══════════
+  // 旧表的 name 上是表级 UNIQUE（全局唯一），SQLite 无法 ALTER 掉，
+  // 由 migrateFolderTree 重建表去掉；这里只补列与同层唯一索引。
+  "ALTER TABLE folders ADD COLUMN parent_id TEXT",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_root_name ON folders(name) WHERE parent_id IS NULL",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_child_name ON folders(parent_id, name) WHERE parent_id IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)",
 ];
 
 /**
@@ -240,6 +247,39 @@ async function runMigrations(env: Env): Promise<void> {
   } catch {
     /* settings 表不存在时忽略 */
   }
+}
+
+/**
+ * folders：从"平铺单层 + 全局唯一名"升级为"parent_id 树 + 同层唯一名"。
+ *
+ * 旧表的 name 上挂着表级 UNIQUE（全局唯一），而 WebDAV 里 /a/b 与 /c/b 这种
+ * 跨层同名必须允许，SQLite 又不能 ALTER 掉约束 —— 只能重建表。
+ * 只在 sqlite_master 里读到旧约束时才动手，重建的 4 条 DDL 放进一个 D1 batch
+ * （batch 内同一事务），中途失败不会留下半张表。
+ */
+export async function migrateFolderTree(env: Env): Promise<void> {
+  let legacySql = "";
+  try {
+    const row = await env.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'folders'")
+      .first<{ sql: string | null }>();
+    legacySql = row?.sql ?? "";
+  } catch {
+    return; // 读不到 sqlite_master：交给后面的迁移语句兜底
+  }
+  if (!legacySql) return;                     // 表还不存在（新部署走建表语句）
+  if (!/\bUNIQUE\b/i.test(legacySql)) return; // 已经是新形状
+
+  await env.db.batch([
+    env.db.prepare(
+      "CREATE TABLE folders_v2(id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at INTEGER NOT NULL)"
+    ),
+    env.db.prepare(
+      "INSERT INTO folders_v2(id, name, parent_id, created_at) SELECT id, name, NULL, created_at FROM folders"
+    ),
+    env.db.prepare("DROP TABLE folders"),
+    env.db.prepare("ALTER TABLE folders_v2 RENAME TO folders"),
+  ]);
 }
 
 export async function ensureSchema(env: Env): Promise<void> {
@@ -285,7 +325,10 @@ export async function ensureSchema(env: Env): Promise<void> {
     }
   }
 
-  // ⑤ 跑增量迁移（幂等，只跑未执行过的）
+  // ⑤ 目录表升级 —— 必须在增量迁移之前（新的同层唯一索引依赖重建后的列）
+  await migrateFolderTree(env);
+
+  // ⑥ 跑增量迁移（幂等，只跑未执行过的）
   await runMigrations(env);
 
   schemaReady = true;
