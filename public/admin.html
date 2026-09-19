@@ -431,6 +431,7 @@ const I18N = {
     generate: '生成链接', shareCreated: '分享链接已创建 ✨', shareCreatedSub: '复制下面的链接发给需要的人',
     sharePageLink: '分享页（访客先看到密码/验证页）',
     directLinkLabel: '直链（/d/xxx，跳过分享页直接下载）',
+    directLinkNone: '直链不带密码校验，所以受密码保护的分享不生成直链。',
     preview: '预览分享页',
     // 分享列表
     sharesTitle: '分享链接', cleanup: '清理失效分享',
@@ -458,9 +459,10 @@ const I18N = {
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
     resetTraffic: '重置本月流量', resetTrafficD: '将已用流量清零，立即恢复下载服务', reset: '重置',
     perIp: '单 IP 最大下载次数',
-    perIpD: '同一 IP 在统计窗口内对同一资源最多可下载的次数，超出后拦截。设为 0 表示不限制。',
+    perIpD: '同一 IP 在统计窗口内对同一资源最多可下载的次数，超出后拦截。设为 0 表示不限制（保存后此前被自动封禁的 IP 会一并解除）。',
     window: '统计窗口（小时）', windowD: '统计单 IP 重复下载的时间范围。设为 0 表示永久累计。',
-    autoBan: '超限自动封禁', autoBanD: '开启后，重复下载超限的 IP 会被自动加入封禁名单',
+    autoBan: '超限自动封禁', autoBanD: '开启后，重复下载超限的 IP 会被自动加入封禁名单；关闭后此前的自动封禁会全部解除（手动封禁不受影响）',
+    unbannedN: '设置已保存，已解除 {n} 个自动封禁的 IP',
     banHours: '封禁时长（小时）', banHoursD: '自动封禁的持续时间，到期自动解封。设为 0 表示永久封禁直至手动解封。',
     clearLogs: '清除下载记录', clearLogsD: '删除下载明细以减少 D1 存储占用（流量统计与分享下载计数不受影响）',
     trafficResetOk: '本月流量已重置', confirmResetT: '重置流量',
@@ -732,6 +734,7 @@ const I18N = {
     generate: 'Generate Link', shareCreated: 'Share link created ✨', shareCreatedSub: 'Copy the link below and share it',
     sharePageLink: 'Share page (visitors see password/verification first)',
     directLinkLabel: 'Direct link (/d/xxx — skips share page)',
+    directLinkNone: 'Direct links carry no password, so password-protected shares don’t get one.',
     preview: 'Preview',
     // 分享列表
     sharesTitle: 'Share Links', cleanup: 'Clean up expired',
@@ -759,9 +762,10 @@ const I18N = {
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
     resetTraffic: 'Reset Monthly Traffic', resetTrafficD: 'Zero out used traffic and resume downloads immediately', reset: 'Reset',
     perIp: 'Max Downloads per IP',
-    perIpD: 'How many times the same IP may download the same resource within the counting window. 0 = unlimited.',
-    window: 'Counting Window (hours)', windowD: 'Time range for counting duplicate downloads per IP. 0 = forever.',
-    autoBan: 'Auto-ban on limit', autoBanD: 'Automatically ban IPs that exceed the duplicate-download limit',
+    perIpD: 'How many times one IP may download the same resource inside the counting window. 0 = unlimited (saving also lifts IPs auto-banned by the old limit).',
+    window: 'Counting Window (hours)', windowD: 'Time range for counting duplicate downloads per IP. 0 = accumulate forever.',
+    autoBan: 'Auto-ban on limit', autoBanD: 'Ban IPs that exceed the duplicate-download limit. Turning this off lifts every auto-ban (manual bans are kept).',
+    unbannedN: 'Settings saved — {n} auto-banned IP(s) released',
     banHours: 'Ban Duration (hours)', banHoursD: 'How long auto-bans last. 0 = permanent until manually lifted.',
     clearLogs: 'Clear Download Logs', clearLogsD: 'Delete log details to save D1 storage (traffic stats and counters unaffected)',
     trafficResetOk: 'Monthly traffic has been reset', confirmResetT: 'Reset traffic',
@@ -1622,7 +1626,7 @@ function openShareModal(fileId){
     try{
       const r = await api('/api/admin/shares', { method:'POST', body: JSON.stringify({ file_id: fileId, expires_hours: exp, max_downloads: max, password, download_name }) });
       const url = location.origin + r.url;
-      const directUrl = location.origin + r.direct_url;
+      const directUrl = r.direct_url ? location.origin + r.direct_url : null;
       openModal(`
         <h3>${esc(t('shareCreated'))}</h3>
         <div class="sub">${esc(t('shareCreatedSub'))}</div>
@@ -1634,13 +1638,15 @@ function openShareModal(fileId){
               <button class="btn primary" data-copy="${esc(url)}">${esc(t('copy'))}</button>
             </div>
           </div>
+          ${directUrl ? `
           <div>
             <div style="font-size:12px;color:rgba(29,36,51,.62);margin-bottom:6px">${esc(t('directLinkLabel'))}</div>
             <div class="link-box">
               <input readonly value="${esc(directUrl)}" onclick="this.select()">
               <button class="btn primary" data-copy="${esc(directUrl)}">${esc(t('copy'))}</button>
             </div>
-          </div>
+          </div>` : `
+          <div style="font-size:12px;color:rgba(29,36,51,.62);line-height:1.5">${esc(t('directLinkNone'))}</div>`}
         </div>
         <div class="actions">
           <button class="btn" data-x>${esc(t('close'))}</button>
@@ -1669,7 +1675,7 @@ async function loadShares(){
           return `
           <tr>
             <td class="name-cell ck-cell">${ckbox(s.id)}${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
-            <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#2563eb;text-decoration:none">/s/${s.id}</a><br><span style="font-size:10px;color:rgba(29,36,51,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" class="dl-link" style="color:#b45309;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button></td>
+            <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#2563eb;text-decoration:none">/s/${s.id}</a>${s.direct_url ? `<br><span style="font-size:10px;color:rgba(29,36,51,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" class="dl-link" style="color:#b45309;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button>` : ''}</td>
             <td class="mono">${pw ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
               <button class="btn sm" data-pw="${s.id}" data-val="${esc(pw)}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
               <button class="btn sm" data-cpw="${esc(pw)}" style="padding:2px 8px;font-size:11px">📋</button>` : `<span style="color:var(--text-3)">—</span>`}</td>
@@ -2628,8 +2634,8 @@ async function loadSettings(){
       codes_floating_button_enabled: $('#st-codes-float').checked,
       codes_floating_button_position: $('#st-codes-pos').value,
     };
-    await api('/api/admin/settings', { method:'PUT', body: JSON.stringify(body) });
-    toast(t('saved'));
+    const r = await api('/api/admin/settings', { method:'PUT', body: JSON.stringify(body) });
+    toast(r && r.unbanned > 0 ? t('unbannedN', { n: r.unbanned }) : t('saved'));
     loadSettings();
   });
 

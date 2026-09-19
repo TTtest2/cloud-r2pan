@@ -55,6 +55,30 @@ function normalizeIds(raw: unknown): string[] {
   return [...seen];
 }
 
+interface ShareForDirect {
+  id: string;
+  file_id: string;
+  created_at: number;
+  expires_at: number | null;
+  max_downloads: number | null;
+  download_name: string | null;
+}
+
+/**
+ * 派生直链的语句：写一行 direct_links + 把 id 回指到 shares.direct_id。
+ * notes 存 `share:<分享 id>`，分享被删除/清理时按它反查删除直链。
+ * ⚠️ 有密码的分享不要派生直链 —— 直链按设计不带密码，派生等于绕过密码。
+ */
+function shareDirectLinkStmts(env: Env, dlId: string, s: ShareForDirect) {
+  return [
+    env.db.prepare(
+      `INSERT INTO direct_links(id, file_id, created_at, expires_at, max_downloads, download_name, notes)
+       VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+    ).bind(dlId, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_name, `share:${s.id}`),
+    env.db.prepare("UPDATE shares SET direct_id = ?1 WHERE id = ?2").bind(dlId, s.id),
+  ];
+}
+
 /** 文件名清洗：去路径分隔符 / 控制字符，限长 */
 function sanitizeName(name: string): string {
   const cleaned = name
@@ -477,6 +501,7 @@ export async function handleAdminApi(
     if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
     await env.db.batch([
       env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
+      env.db.prepare("DELETE FROM direct_links WHERE file_id = ?1").bind(fileId),
       env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
       env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
     ]);
@@ -498,7 +523,8 @@ export async function handleAdminApi(
       market_desc?: string | null;
     }>(req);
     if (!body.file_id) return json({ error: msg(req, "缺少 file_id", "Missing file_id") }, 400);
-    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1").bind(body.file_id).first();
+    const fileId = body.file_id;
+    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1").bind(fileId).first();
     if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
     const expiresAt =
       body.expires_hours && body.expires_hours > 0 ? Date.now() + body.expires_hours * 3600_000 : null;
@@ -523,20 +549,47 @@ export async function handleAdminApi(
     )
       .bind(id, body.file_id, Date.now(), expiresAt, maxDownloads, passwordHash, passwordCipher, downloadName, isMarket, marketTitle, marketDesc)
       .run();
-    return json({ ok: true, id, url: `/s/${id}` }, 201);
+
+    let directUrl: string | null = null;
+    if (!passwordHash) {
+      const dlId = randomId(12);
+      await env.db.batch(shareDirectLinkStmts(env, dlId, {
+        id,
+        file_id: fileId,
+        created_at: Date.now(),
+        expires_at: expiresAt,
+        max_downloads: maxDownloads,
+        download_name: downloadName,
+      }));
+      directUrl = `/d/${dlId}`;
+    }
+    return json({ ok: true, id, url: `/s/${id}`, direct_url: directUrl }, 201);
   }
 
   // ── 分享列表 ──────────────────────────────────────
   if (path === "/api/admin/shares" && method === "GET") {
     const { results } = await env.db.prepare(
       `SELECT s.id, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked,
-              s.password_hash, s.password_cipher, s.download_name,
+              s.password_hash, s.password_cipher, s.download_name, s.direct_id,
               s.is_market, s.market_views, s.market_title, s.market_desc,
               f.name AS file_name, f.size AS file_size, f.mime AS file_mime
        FROM shares s JOIN files f ON f.id = s.file_id
        ORDER BY s.created_at DESC`
     ).all();
     const now = Date.now();
+    // 这个功能上线前创建的分享没有直链，这里按需补建（有密码的不补：直链等于绕过密码）
+    const backfill = (results ?? []).filter((s: any) =>
+      !s.direct_id && !s.password_hash && !s.revoked &&
+      !(s.expires_at && s.expires_at < now) &&
+      !(s.max_downloads && s.download_count >= s.max_downloads));
+    if (backfill.length) {
+      const stmts = backfill.flatMap((s: any) => {
+        const dlId = randomId(12);
+        s.direct_id = dlId;
+        return shareDirectLinkStmts(env, dlId, s);
+      });
+      await env.db.batch(stmts);
+    }
     // 并行解密所有密码明文
     const shares = await Promise.all(
       (results ?? []).map(async (s: any) => ({
@@ -546,6 +599,7 @@ export async function handleAdminApi(
         password_hash: undefined,
         password_cipher: undefined,
         url: `/s/${s.id}`,
+        direct_url: s.direct_id ? `/d/${s.direct_id}` : null,
         status: s.revoked
           ? "revoked"
           : s.expires_at && s.expires_at < now
@@ -567,6 +621,13 @@ export async function handleAdminApi(
     )
       .bind(now)
       .run();
+
+    // 1b. 派生直链跟着分享一起清掉（只认 notes='share:xxx'，手工建的直链不动）
+    await env.db.prepare(
+      `DELETE FROM direct_links
+       WHERE notes LIKE 'share:%'
+         AND id NOT IN (SELECT direct_id FROM shares WHERE direct_id IS NOT NULL)`
+    ).run();
 
     // 2. 查出孤儿 files：没有任何 share 引用的文件（LEFT JOIN 反查）
     const orphans = await env.db.prepare(
@@ -616,6 +677,7 @@ export async function handleAdminApi(
   if (shareMatch && method === "DELETE") {
     const r = await env.db.prepare("DELETE FROM shares WHERE id = ?1").bind(shareMatch[1]).run();
     if ((r.meta.changes ?? 0) === 0) return json({ error: msg(req, "分享不存在", "Share not found") }, 404);
+    await env.db.prepare("DELETE FROM direct_links WHERE notes = ?1").bind(`share:${shareMatch[1]}`).run();
     return json({ ok: true });
   }
 
@@ -626,6 +688,10 @@ export async function handleAdminApi(
     if (!ids.length) return json({ error: msg(req, "请先选择分享链接", "No shares selected") }, 400);
     const ph = ids.map((_, i) => `?${i + 1}`).join(", ");
     const r = await env.db.prepare(`DELETE FROM shares WHERE id IN (${ph})`).bind(...ids).run();
+    await env.db
+      .prepare(`DELETE FROM direct_links WHERE notes IN (${ph})`)
+      .bind(...ids.map((i) => `share:${i}`))
+      .run();
     return json({ ok: true, revoked: r.meta.changes ?? 0, skipped: ids.length - (r.meta.changes ?? 0) });
   }
 
@@ -1223,7 +1289,21 @@ export async function handleAdminApi(
     await updateSettings(env, patch);
     // storage 配置变了，清掉缓存的 storage provider 让下次请求用新配置
     _storagePromise = null;
-    return json({ ok: true });
+
+    // 单 IP 上限调成不限 / 关掉自动封禁后，要顺手解除此前自动封禁的 IP：
+    // 下载入口先查 banned_ips 再看限额，否则管理员会以为设置没生效
+    let unbanned = 0;
+    if ("max_downloads_per_ip" in patch || "auto_ban" in patch) {
+      const after = await getSettings(env);
+      if (after.maxDownloadsPerIp === 0 || !after.autoBan) {
+        // 只清下载流程自动写入的那批（reason 固定是「重复下载…超过 N 次」），手动封禁不动
+        const r = await env.db
+          .prepare(`DELETE FROM banned_ips WHERE reason LIKE '重复下载%超过%次%'`)
+          .run();
+        unbanned = r.meta.changes ?? 0;
+      }
+    }
+    return json({ ok: true, unbanned });
   }
 
   // ── 清空 Turnstile 访问计数 ────────────────────────

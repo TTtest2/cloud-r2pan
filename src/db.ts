@@ -35,7 +35,8 @@ const SCHEMA_STATEMENTS: string[] = [
     is_market INTEGER NOT NULL DEFAULT 0,
     market_views INTEGER NOT NULL DEFAULT 0,
     market_title TEXT,
-    market_desc TEXT
+    market_desc TEXT,
+    direct_id TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_shares_file ON shares(file_id)`,
   `CREATE INDEX IF NOT EXISTS idx_shares_market ON shares(is_market, revoked)`,
@@ -200,6 +201,8 @@ const MIGRATION_STATEMENTS: string[] = [
   "CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)",
   "ALTER TABLE files ADD COLUMN folder_id TEXT",
   "CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id)",
+  // ═══════════ 分享派生直链（shares.direct_id → direct_links.id） ═══════════
+  "ALTER TABLE shares ADD COLUMN direct_id TEXT",
 ];
 
 /**
