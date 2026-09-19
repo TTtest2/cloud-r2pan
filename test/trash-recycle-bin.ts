@@ -154,13 +154,26 @@ class Db {
     }
 
     /* ── 统计 ── */
-    if (/COUNT\(\*\) AS c, COALESCE\(SUM\(size\), 0\) AS bytes FROM files WHERE deleted_at IS NULL/.test(sql)) {
-      const live = this.files.filter((f) => !f.deleted_at);
-      return { c: live.length, bytes: live.reduce((a, b) => a + b.size, 0) };
+    if (/^SELECT COUNT\(\*\) AS c FROM files WHERE deleted_at IS NULL/.test(sql)) {
+      return { c: this.files.filter((f) => !f.deleted_at).length };
     }
-    if (/COUNT\(\*\) AS c, COALESCE\(SUM\(size\), 0\) AS bytes FROM files WHERE deleted_at IS NOT NULL/.test(sql)) {
-      const t = this.files.filter((f) => f.deleted_at);
-      return { c: t.length, bytes: t.reduce((a, b) => a + b.size, 0) };
+    if (/^SELECT COUNT\(\*\) AS c FROM files WHERE deleted_at IS NOT NULL/.test(sql)) {
+      return { c: this.files.filter((f) => f.deleted_at).length };
+    }
+    if (/AS bytes FROM \(SELECT MIN\(size\) AS s FROM files WHERE deleted_at IS NOT NULL GROUP BY key\)/.test(sql)) {
+      const seen = new Set<string>();
+      const bytes = this.files.filter((f) => f.deleted_at && !seen.has(f.key) && seen.add(f.key)).reduce((a, b) => a + b.size, 0);
+      return { bytes };
+    }
+    if (/AS bytes FROM \(SELECT MIN\(size\) AS s FROM files GROUP BY key\)/.test(sql)) {
+      const seen = new Set<string>();
+      const bytes = this.files.filter((f) => !seen.has(f.key) && seen.add(f.key)).reduce((a, b) => a + b.size, 0);
+      return { bytes };
+    }
+    if (/^SELECT key, COUNT\(\*\) AS c FROM files WHERE key IN/.test(sql)) {
+      return binds.map(String)
+        .map((k) => ({ key: k, c: this.files.filter((f) => f.key === k).length }))
+        .filter((r) => r.c > 0);
     }
     if (/COUNT\(\*\) AS c FROM shares/.test(sql)) return { c: this.shares.length };
     if (/COALESCE\(SUM\(downloads\), 0\) AS c FROM traffic_stats/.test(sql)) return { c: 0 };

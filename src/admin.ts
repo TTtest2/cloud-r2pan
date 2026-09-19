@@ -14,6 +14,7 @@ import { escapeLike } from "./market";
 import { deleteObjects, purgeFiles, removeFiles, restoreFiles } from "./trash";
 import { runScheduledCleanup } from "./cron";
 import { CHUNK_MAX, abortUpload, completeUpload, initUpload, partTooLarge, uploadPart } from "./uploads";
+import { claimBySha, dedupeAfterWrite, etagFp, findBySha, normalizeSha } from "./dedupe";
 import {
   declaredSize,
   formatMb,
@@ -287,10 +288,15 @@ export async function handleAdminApi(
   if (path === "/api/admin/stats" && method === "GET") {
     // getSettings 内部已做跨月自动兜底，无需此处重复检查和 DB 写入
     const s = await getSettings(env);
-    const [files, trash, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned] =
+    const [files, trash, liveBytes, trashBytes, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned] =
       await Promise.all([
-        env.db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM files WHERE deleted_at IS NULL").first<{ c: number; bytes: number }>(),
-        env.db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM files WHERE deleted_at IS NOT NULL").first<{ c: number; bytes: number }>(),
+        env.db.prepare("SELECT COUNT(*) AS c FROM files WHERE deleted_at IS NULL").first<{ c: number }>(),
+        env.db.prepare("SELECT COUNT(*) AS c FROM files WHERE deleted_at IS NOT NULL").first<{ c: number }>(),
+        // 按 key 去重后再求和：内容去重让多个 files 行共用同一个对象
+        env.db.prepare("SELECT COALESCE(SUM(s), 0) AS bytes FROM (SELECT MIN(size) AS s FROM files GROUP BY key)").first<{ bytes: number }>(),
+        env.db
+          .prepare("SELECT COALESCE(SUM(s), 0) AS bytes FROM (SELECT MIN(size) AS s FROM files WHERE deleted_at IS NOT NULL GROUP BY key)")
+          .first<{ bytes: number }>(),
         env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>(),
         env.db.prepare(
           "SELECT COUNT(*) AS c FROM shares WHERE revoked = 0 AND (expires_at IS NULL OR expires_at > ?1) AND (max_downloads IS NULL OR download_count < max_downloads)"
@@ -342,11 +348,11 @@ export async function handleAdminApi(
         banned: banned?.c ?? 0,
       },
       storage: {
-        // files.size 记录的是 put 时 R2 返回的真实对象大小，累加即已用存储。
+        // 按对象 key 去重后的真实占用：files.size 是写入时存储回报的字节数，
         // 回收站里的对象还没删，所以它也算占用 —— 只有彻底清除才会腾出空间。
-        bytes: (Number(files?.bytes ?? 0) || 0) + (Number(trash?.bytes ?? 0) || 0),
+        bytes: Number(liveBytes?.bytes ?? 0) || 0,
         files: files?.c ?? 0,
-        trash_bytes: Number(trash?.bytes ?? 0) || 0,
+        trash_bytes: Number(trashBytes?.bytes ?? 0) || 0,
       },
       chart,
       recent: recent.results ?? [],
@@ -525,6 +531,7 @@ export async function handleAdminApi(
     // （请求体本身或 FixedLengthStream），任何 pipeThrough 包装都会让它报
     // "Provided readable stream must have a known length" —— 上传全挂。
     let resultSize = 0;
+    let resultEtag: string | null = null;
     try {
       const res = await st.put(key, req.body, {
         contentType: mime,
@@ -532,6 +539,7 @@ export async function handleAdminApi(
         contentLength: declared ?? undefined,
       });
       resultSize = res.size;
+      resultEtag = res.etag ?? null;
     } catch (err: any) {
       await st.delete(key).catch(() => {});
       return json({ error: msg(req, "存储写入失败", "Storage write failed"), detail: String(err?.message || err) }, 500);
@@ -547,23 +555,63 @@ export async function handleAdminApi(
       );
     }
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──
+    const sha = normalizeSha(req.headers.get("x-content-sha256"));
+    const etagFpVal = resultEtag ? etagFp(resultEtag) : null;
     try {
       await env.db.prepare(
-        "INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+        "INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id, sha256, etag) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
       )
-        .bind(id, key, name, resultSize, mime, Date.now(), folderId)
+        .bind(id, key, name, resultSize, mime, Date.now(), folderId, sha, etagFpVal)
         .run();
     } catch (dbErr) {
       ctx.waitUntil(st.delete(key).catch(() => {}));
       console.error("upload: D1 insert failed, cleaned up storage object:", dbErr);
       return json({ error: msg(req, "数据库写入失败，请重试", "Database write failed. Please retry.") }, 500);
     }
-    return json({ ok: true, id, name, size: resultSize }, 201);
+    const { deduped } = await dedupeAfterWrite(env, { id, key, size: resultSize }, etagFpVal, (k) => {
+      ctx.waitUntil(st.delete(k).catch(() => {}));
+    });
+    return json({ ok: true, id, name, size: resultSize, deduped }, 201);
+  }
+
+  // ── 秒传：先查指纹，命中就只写一行元数据（一个字节都不用传） ──
+  if (path === "/api/admin/upload/check" && method === "POST") {
+    const body = await readJson<{ sha256?: string; size?: number }>(req);
+    const sha = normalizeSha(body.sha256);
+    if (!sha) return json({ ok: false, error: "bad_sha256" }, 400);
+    const size = Number.isFinite(body.size) && (body.size as number) > 0 ? Math.floor(body.size as number) : null;
+    const hit = await findBySha(env, sha, size);
+    return json({ ok: true, exists: !!hit, id: hit?.id ?? null, name: hit?.name ?? null, size: hit?.size ?? null });
+  }
+
+  if (path === "/api/admin/upload/claim" && method === "POST") {
+    const body = await readJson<{ sha256?: string; name?: string; folder_id?: string | null }>(req);
+    const sha = normalizeSha(body.sha256);
+    if (!sha) return json({ error: msg(req, "缺少或非法的 sha256", "Missing or malformed sha256") }, 400);
+    const raw = (body.name ?? "").trim();
+    if (!raw) return json({ error: msg(req, "缺少文件名", "Missing file name") }, 400);
+    let name: string;
+    try {
+      name = sanitizeName(decodeURIComponent(raw));
+    } catch {
+      name = sanitizeName(raw);
+    }
+    let folderId: string | null = null;
+    const rawFolder = typeof body.folder_id === "string" ? body.folder_id.trim() : "";
+    if (rawFolder) {
+      const fo = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(rawFolder).first<{ id: string }>();
+      if (!fo) return json({ error: msg(req, "目标文件夹不存在", "Target folder not found") }, 400);
+      folderId = fo.id;
+    }
+    const settings = await getSettings(env);
+    const r = await claimBySha(env, settings, sha, name, folderId, randomId);
+    if (!r.ok) return json({ error: r.code, ...(r.limitMb ? { limit_mb: r.limitMb } : {}) }, r.status);
+    return json({ ok: true, id: r.id, name: r.name, size: r.size, deduped: true }, 201);
   }
 
   // ── 分片上传：init / part / complete / abort（突破单请求 100 MB） ──
   if (path === "/api/admin/upload/init" && method === "POST") {
-    const body = await readJson<{ name?: string; size?: number; mime?: string; folder_id?: string | null }>(req);
+    const body = await readJson<{ name?: string; size?: number; mime?: string; sha256?: string; folder_id?: string | null }>(req);
     const raw = (body.name ?? "").trim();
     if (!raw) return json({ error: msg(req, "缺少文件名", "Missing file name") }, 400);
     let name: string;
@@ -586,6 +634,7 @@ export async function handleAdminApi(
       mime: (body.mime ?? "").trim() || "application/octet-stream",
       folder_id: folderId,
       size: declared,
+      sha256: body.sha256 ?? null,
     });
     if (!r.ok) {
       return json(
@@ -629,7 +678,7 @@ export async function handleAdminApi(
           r.status
         );
       }
-      return json({ ok: true, id: r.id, name: r.name, size: r.size }, 201);
+      return json({ ok: true, id: r.id, name: r.name, size: r.size, deduped: r.deduped }, 201);
     } catch (err: any) {
       console.error("upload complete failed:", err);
       return json({ error: msg(req, "合并分片失败，请重试", "Multipart complete failed. Please retry.") }, 502);
@@ -720,8 +769,8 @@ export async function handleAdminApi(
       const { results } = await env.db
         .prepare(
           body.all
-            ? `SELECT id FROM files WHERE deleted_at IS NOT NULL ORDER BY deleted_at LIMIT 200`
-            : `SELECT id FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?1 ORDER BY deleted_at LIMIT 200`
+            ? `SELECT id FROM files WHERE deleted_at IS NOT NULL ORDER BY deleted_at LIMIT 100`
+            : `SELECT id FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?1 ORDER BY deleted_at LIMIT 100`
         )
         .bind(...(body.all ? [] : [Date.now() - s.trashRetentionDays * 86_400_000]))
         .all<{ id: string }>();

@@ -17,6 +17,7 @@
 import type { Env } from "./types";
 import type { Settings } from "./settings";
 import { getStorageProvider } from "./storage";
+import { refsPerKey } from "./dedupe";
 
 /** 未删除文件的过滤条件（读路径统一用它，别各自手写） */
 export const LIVE_FILES = "deleted_at IS NULL";
@@ -30,21 +31,36 @@ export interface RemoveResult {
 
 const DAY_MS = 86_400_000;
 
+/**
+ * 单条查询最多带多少个 id。
+ * D1 的上限是每条查询 100 个绑定参数，而软删除那条 UPDATE 还要多绑一个时间戳，
+ * 所以这里留一半余量 —— 超过就分批，绝不把用户勾选的整批 id 直接塞进 IN (...)。
+ */
+const MAX_BINDS = 50;
+
+function chunks<T>(arr: T[], size = MAX_BINDS): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 /** 把 id 列表变成安全的位置占位符（D1 只认 ? / ?N，不认具名参数） */
 function placeholders(ids: (string | number)[]): string {
   return ids.map((_, i) => `?${i + 1}`).join(", ");
 }
 
-/** 查出这些 id 里确实存在、且状态匹配 scope 的行 */
+/** 查出这些 id 里确实存在、且状态匹配 scope 的行（按 MAX_BINDS 分批） */
 async function rowsForDelete(env: Env, ids: string[], scope: "live" | "trash" | "any") {
-  if (!ids.length) return [];
   const extra = scope === "live" ? " AND deleted_at IS NULL" : scope === "trash" ? " AND deleted_at IS NOT NULL" : "";
-  const where = `id IN (${placeholders(ids)})${extra}`;
-  const { results } = await env.db
-    .prepare(`SELECT id, key, folder_id FROM files WHERE ${where}`)
-    .bind(...ids)
-    .all<{ id: string; key: string; folder_id: string | null }>();
-  return results ?? [];
+  const out: { id: string; key: string; folder_id: string | null }[] = [];
+  for (const part of chunks(ids)) {
+    const { results } = await env.db
+      .prepare(`SELECT id, key, folder_id FROM files WHERE id IN (${placeholders(part)})${extra}`)
+      .bind(...part)
+      .all<{ id: string; key: string; folder_id: string | null }>();
+    out.push(...(results ?? []));
+  }
+  return out;
 }
 
 /**
@@ -55,14 +71,24 @@ export async function purgeFiles(env: Env, ids: string[]): Promise<RemoveResult>
   const found = await rowsForDelete(env, ids, "any");
   if (!found.length) return { soft: 0, purged: 0, keys: [] };
   const foundIds = found.map((f) => f.id);
-  const ph = placeholders(foundIds);
-  await env.db.batch([
-    env.db.prepare(`DELETE FROM shares WHERE file_id IN (${ph})`).bind(...foundIds),
-    env.db.prepare(`DELETE FROM direct_links WHERE file_id IN (${ph})`).bind(...foundIds),
-    env.db.prepare(`DELETE FROM download_logs WHERE file_id IN (${ph})`).bind(...foundIds),
-    env.db.prepare(`DELETE FROM files WHERE id IN (${ph})`).bind(...foundIds),
-  ]);
-  return { soft: 0, purged: foundIds.length, keys: found.map((f) => f.key) };
+  // 去重后同一个 key 可能被多行引用 —— 只有最后一份引用消失时才能删对象
+  const total = new Map<string, number>();
+  for (const part of chunks(found.map((f) => f.key))) {
+    for (const [k, n] of await refsPerKey(env, part)) total.set(k, n);
+  }
+  const mine = new Map<string, number>();
+  for (const f of found) mine.set(f.key, (mine.get(f.key) ?? 0) + 1);
+  const keys = [...mine.keys()].filter((k) => (total.get(k) ?? 0) - (mine.get(k) ?? 0) <= 0);
+  for (const part of chunks(foundIds)) {
+    const ph = placeholders(part);
+    await env.db.batch([
+      env.db.prepare(`DELETE FROM shares WHERE file_id IN (${ph})`).bind(...part),
+      env.db.prepare(`DELETE FROM direct_links WHERE file_id IN (${ph})`).bind(...part),
+      env.db.prepare(`DELETE FROM download_logs WHERE file_id IN (${ph})`).bind(...part),
+      env.db.prepare(`DELETE FROM files WHERE id IN (${ph})`).bind(...part),
+    ]);
+  }
+  return { soft: 0, purged: foundIds.length, keys };
 }
 
 /**
@@ -82,10 +108,12 @@ export async function removeFiles(
   const live = await rowsForDelete(env, ids, "live");
   if (!live.length) return { soft: 0, purged: 0, keys: [] };
   const foundIds = live.map((f) => f.id);
-  await env.db
-    .prepare(`UPDATE files SET deleted_at = ?1 WHERE id IN (${placeholders(foundIds)}) AND deleted_at IS NULL`)
-    .bind(now, ...foundIds)
-    .run();
+  for (const part of chunks(foundIds)) {
+    await env.db
+      .prepare(`UPDATE files SET deleted_at = ?1 WHERE id IN (${placeholders(part)}) AND deleted_at IS NULL`)
+      .bind(now, ...part)
+      .run();
+  }
   return { soft: foundIds.length, purged: 0, keys: [] };
 }
 
@@ -94,28 +122,23 @@ export async function restoreFiles(env: Env, ids: string[]): Promise<{ restored:
   const found = await rowsForDelete(env, ids, "trash");
   if (!found.length) return { restored: 0, toRoot: 0 };
   const foundIds = found.map((f) => f.id);
-  const ph = placeholders(foundIds);
   const wanted = [...new Set(found.map((f) => f.folder_id).filter((x): x is string => !!x))];
   const existing = new Set<string>();
-  if (wanted.length) {
+  for (const part of chunks(wanted)) {
     const { results } = await env.db
-      .prepare(`SELECT id FROM folders WHERE id IN (${placeholders(wanted)})`)
-      .bind(...wanted)
+      .prepare(`SELECT id FROM folders WHERE id IN (${placeholders(part)})`)
+      .bind(...part)
       .all<{ id: string }>();
     for (const r of results ?? []) existing.add(r.id);
   }
   const orphaned = found.filter((f) => f.folder_id && !existing.has(f.folder_id)).map((f) => f.id);
 
-  await env.db.batch([
-    env.db.prepare(`UPDATE files SET deleted_at = NULL WHERE id IN (${ph})`).bind(...foundIds),
-    ...(orphaned.length
-      ? [
-          env.db
-            .prepare(`UPDATE files SET folder_id = NULL WHERE id IN (${placeholders(orphaned)})`)
-            .bind(...orphaned),
-        ]
-      : []),
-  ]);
+  for (const part of chunks(foundIds)) {
+    await env.db.prepare(`UPDATE files SET deleted_at = NULL WHERE id IN (${placeholders(part)})`).bind(...part).run();
+  }
+  for (const part of chunks(orphaned)) {
+    await env.db.prepare(`UPDATE files SET folder_id = NULL WHERE id IN (${placeholders(part)})`).bind(...part).run();
+  }
   return { restored: foundIds.length, toRoot: orphaned.length };
 }
 

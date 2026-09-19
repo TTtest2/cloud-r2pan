@@ -30,10 +30,14 @@ export function declaredSize(req: Request): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-/** 当前已用存储（files 表的 size 合计） */
+/**
+ * 当前已用存储 —— 按对象 key 去重后统计。
+ * 去重后同一个 key 会被多行引用，直接 SUM(size) 会把同一份字节算好几遍；
+ * 回收站里的行照样占存储，所以不过滤 deleted_at。
+ */
 export async function usedStorageBytes(env: Env): Promise<number> {
   const row = await env.db
-    .prepare("SELECT COALESCE(SUM(size), 0) AS bytes FROM files")
+    .prepare("SELECT COALESCE(SUM(s), 0) AS bytes FROM (SELECT MIN(size) AS s FROM files GROUP BY key)")
     .first<{ bytes: number }>();
   return row?.bytes ?? 0;
 }

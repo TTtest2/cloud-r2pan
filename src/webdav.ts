@@ -31,7 +31,7 @@ import {
   preUploadRejection,
   usedStorageBytes,
 } from "./limits";
-import { removeFiles } from "./trash";
+import { purgeFiles, removeFiles } from "./trash";
 import { getStorageProvider as storage } from "./storage";
 import { randomId } from "./db";
 import {
@@ -559,13 +559,6 @@ async function handleWebDavPut(
       : `Insufficient Storage: quota is ${formatMb(over.limitBytes)} MB`, { status: over.status });
   }
 
-  // 覆盖上传：先换行再删旧对象，中途失败最多留一个孤儿对象
-  if (existing) {
-    try {
-      await env.db.batch(fileDeleteStmts(env, existing.id));
-    } catch { /* 忽略清理失败 */ }
-  }
-
   try {
     await env.db.prepare(
       "INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
@@ -575,22 +568,17 @@ async function handleWebDavPut(
     await st.delete(key).catch(() => {});
     return new Response(`DB error: ${err?.message || err}`, { status: 502 });
   }
-  if (existing) await st.delete(existing.key).catch(() => {});
+  // 覆盖上传：新行写成功了才退掉旧行。走 purgeFiles 而不是直接删对象 ——
+  // 内容去重之后同一个 key 可能还被别的文件引用着，数错一次就是删掉别人的数据。
+  if (existing) {
+    const purged = await purgeFiles(env, [existing.id]).catch(() => ({ keys: [] as string[] }));
+    for (const k of purged.keys) await st.delete(k).catch(() => {});
+  }
 
   return new Response(null, {
     status: existing ? 204 : 201,
     headers: { "ETag": `"${id}"` },
   });
-}
-
-/** 删一个文件行需要连带清掉的引用（顺序无关，同一个 batch 内一事务） */
-function fileDeleteStmts(env: Env, fileId: string) {
-  return [
-    env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
-    env.db.prepare("DELETE FROM direct_links WHERE file_id = ?1").bind(fileId),
-    env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
-    env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
-  ];
 }
 
 /* ═══════════ DELETE ═══════════ */

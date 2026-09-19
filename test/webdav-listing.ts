@@ -75,7 +75,8 @@ class Store {
       return { results: this.folders.map((f) => ({ ...f })) };
     }
 
-    if (/FROM files/.test(norm) && /^SELECT/.test(norm)) {
+    if (/FROM files/.test(norm) && /^SELECT/.test(norm)
+      && !/^SELECT key, COUNT\(\*\)/.test(norm) && !/^SELECT id, key, folder_id FROM files WHERE id IN/.test(norm)) {
       // 回收站/彻底删除前的行查询：WHERE id IN (?1, ?2…) [AND deleted_at IS NULL]
       const byIds = /^SELECT id, key, folder_id FROM files WHERE id IN \(([^)]*)\)( AND deleted_at IS NULL)?/.exec(norm);
       if (byIds) {
@@ -116,6 +117,23 @@ class Store {
       return { meta: { changes: 1 } };
     }
 
+    if (/^SELECT key, COUNT\(\*\) AS c FROM files WHERE key IN/.test(norm)) {
+      return {
+        results: binds.map(String)
+          .map((k) => ({ key: k, c: this.files.filter((f) => f.key === k).length }))
+          .filter((r) => r.c > 0),
+      };
+    }
+    if (/^SELECT id, key, folder_id FROM files WHERE id IN/.test(norm)) {
+      const n = /\((\?\d+(?:, \?\d+)*)\)/.exec(norm)?.[1]?.split(",").length ?? binds.length;
+      const ids = binds.slice(0, n).map(String);
+      const live = /AND deleted_at IS NULL/.test(norm);
+      return {
+        results: this.files
+          .filter((f) => ids.includes(f.id) && (!live || !f.deleted_at))
+          .map((f) => ({ id: f.id, key: f.key, folder_id: f.folder_id })),
+      };
+    }
     // 软删除进回收站
     const soft = /^UPDATE files SET deleted_at = \?1 WHERE id IN \(([^)]*)\) AND deleted_at IS NULL/.exec(norm);
     if (soft) {
@@ -152,6 +170,14 @@ class Store {
       this.files = this.files.filter((f) => f.id !== id);
       this.deletedFileIds.push(id);
       return { meta: { changes: 1 } };
+    }
+
+    // purgeFiles：按 id 批量删行
+    if (/^DELETE FROM files WHERE id IN \(/.test(norm)) {
+      const ids = binds.map(String);
+      this.files = this.files.filter((f) => !ids.includes(f.id));
+      this.deletedFileIds.push(...ids);
+      return { meta: { changes: ids.length } };
     }
 
     if (/^INSERT INTO folders\(/.test(norm)) {

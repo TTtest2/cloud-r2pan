@@ -231,6 +231,17 @@ const MIGRATION_STATEMENTS: string[] = [
   // 需要展示目录分享的查询必须走 folder_id。
   "ALTER TABLE shares ADD COLUMN folder_id TEXT",
   "CREATE INDEX IF NOT EXISTS idx_shares_folder ON shares(folder_id)",
+  // ═══════════════ 内容去重与秒传 ═══════════════
+  // 两条互补的指纹：
+  //   sha256 —— 浏览器算好随上传带上（唯一能"一个字节都不传"的秒传依据）
+  //   etag   —— 存储后端写完对象的回执（分片上传形如 "…-N"），服务端零成本可得，
+  //             用于写后去重：发现重复就把刚写的那份对象删掉、行改指已有 key
+  // 去重后同一个 key 会被多行引用 —— "还能不能删对象"只看剩余行数，不看行 id。
+  "ALTER TABLE files ADD COLUMN sha256 TEXT",
+  "ALTER TABLE files ADD COLUMN etag TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_files_sha ON files(sha256) WHERE sha256 IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS idx_files_etag ON files(etag) WHERE etag IS NOT NULL",
+  "ALTER TABLE upload_sessions ADD COLUMN sha256 TEXT",
 ];
 
 /**

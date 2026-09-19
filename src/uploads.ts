@@ -22,6 +22,7 @@ import type { Settings } from "./settings";
 import type { StoredPart } from "./storage";
 import { randomId } from "./db";
 import { getStorageProvider } from "./storage";
+import { dedupeAfterWrite, etagFp, normalizeSha } from "./dedupe";
 import { declaredSize, postUploadRejection, preUploadRejection, usedStorageBytes, type UploadRejection } from "./limits";
 
 /** 建议分片大小：≥5 MiB（S3/R2 对非末片的最小值），远小于 100 MB 请求体上限 */
@@ -41,6 +42,7 @@ export interface UploadSession {
   mime: string;
   folder_id: string | null;
   size_declared: number | null;
+  sha256: string | null;
   created_at: number;
 }
 
@@ -52,7 +54,7 @@ async function loadSession(env: Env, id: string): Promise<UploadSession | null> 
   return (
     (await env.db
       .prepare(
-        `SELECT id, key, upload_id, name, mime, folder_id, size_declared, created_at
+        `SELECT id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at
          FROM upload_sessions WHERE id = ?1`
       )
       .bind(id)
@@ -64,7 +66,7 @@ async function loadSession(env: Env, id: string): Promise<UploadSession | null> 
 export async function initUpload(
   env: Env,
   settings: Settings,
-  input: { name: string; mime: string; folder_id: string | null; size: number | null }
+  input: { name: string; mime: string; folder_id: string | null; size: number | null; sha256?: string | null }
 ): Promise<InitResult> {
   const declared = input.size;
   if (declared !== null && declared > 0 && settings.maxUploadBytes > 0 && declared > settings.maxUploadBytes) {
@@ -82,19 +84,20 @@ export async function initUpload(
 
   const id = randomId(14);
   const key = `files/${id}`;
+  const sha = normalizeSha(input.sha256);
   const st = await getStorageProvider(env);
   const { uploadId } = await st.createMultipart(key, { contentType: input.mime });
   const now = Date.now();
   await env.db
     .prepare(
-      `INSERT INTO upload_sessions(id, key, upload_id, name, mime, folder_id, size_declared, created_at)
-       VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
+      `INSERT INTO upload_sessions(id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at)
+       VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
     )
-    .bind(id, key, uploadId, input.name, input.mime, input.folder_id, declared, now)
+    .bind(id, key, uploadId, input.name, input.mime, input.folder_id, declared, sha, now)
     .run();
   return {
     ok: true,
-    session: { id, key, upload_id: uploadId, name: input.name, mime: input.mime, folder_id: input.folder_id, size_declared: declared, created_at: now },
+    session: { id, key, upload_id: uploadId, name: input.name, mime: input.mime, folder_id: input.folder_id, size_declared: declared, sha256: sha, created_at: now },
     chunk_size: CHUNK_SIZE,
   };
 }
@@ -115,7 +118,7 @@ export async function uploadPart(env: Env, sessionId: string, partNumber: number
 }
 
 export type CompleteResult =
-  | { ok: true; id: string; name: string; size: number }
+  | { ok: true; id: string; name: string; size: number; deduped: boolean }
   | { ok: false; status: number; code: string; limitBytes?: number };
 
 /** 合并 → 用真实字节复核上限与配额 → 落库 */
@@ -139,7 +142,8 @@ export async function completeUpload(
   }
 
   const st = await getStorageProvider(env);
-  await st.completeMultipart(session.key, session.upload_id, parts);
+  const merged = await st.completeMultipart(session.key, session.upload_id, parts);
+  const etag = merged?.etag ? etagFp(merged.etag) : null;
 
   // 真实体积：客户端报什么都不算数
   const head = await st.head(session.key);
@@ -153,10 +157,13 @@ export async function completeUpload(
   }
 
   await env.db
-    .prepare("INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)")
-    .bind(session.id, session.key, session.name, size, session.mime, Date.now(), session.folder_id)
+    .prepare("INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id, sha256, etag) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
+    .bind(session.id, session.key, session.name, size, session.mime, Date.now(), session.folder_id, session.sha256 ?? null, etag)
     .run();
-  return { ok: true, id: session.id, name: session.name, size };
+  const { deduped } = await dedupeAfterWrite(env, { id: session.id, key: session.key, size }, etag, (key) => {
+    void st.delete(key).catch(() => {});
+  });
+  return { ok: true, id: session.id, name: session.name, size, deduped };
 }
 
 /** 客户端取消：中止分片并删会话 */
@@ -172,7 +179,7 @@ export async function abortUpload(env: Env, sessionId: string): Promise<boolean>
 /** 超时未完成的会话（cron 用；分批处理，单次跑不完下一轮接着来） */
 export async function staleUploadIds(env: Env, now: number, limit: number): Promise<UploadSession[]> {
   const { results } = await env.db
-    .prepare(`SELECT id, key, upload_id, name, mime, folder_id, size_declared, created_at
+    .prepare(`SELECT id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at
               FROM upload_sessions WHERE created_at < ?1 ORDER BY created_at LIMIT ?2`)
     .bind(now - UPLOAD_TTL_MS, limit)
     .all<UploadSession>();

@@ -425,11 +425,12 @@ const I18N = {
     runCleanupResult: '清理完成：撤销 {s} 条过期分享、删除 {l} 条到期直链、彻底清除 {t} 个回收站文件；异常 {m} 个（对象缺失）',
     trashHint: '回收站里的文件仍占用存储配额；超过保留期会被自动彻底清除。',
     confirmPurgeT: '彻底删除', confirmPurgeD: '将立即删除 {n} 个文件及其存储对象，并连带清掉它们的分享与直链。此操作不可恢复。',
-    confirmPurgeAllT: '清空回收站', confirmPurgeAllD: '将立即彻底删除回收站里的全部条目（每批最多 200 条）。此操作不可恢复。',
+    confirmPurgeAllT: '清空回收站', confirmPurgeAllD: '将立即彻底删除回收站里的条目（单次最多 100 条，剩下的由定时任务继续清）。此操作不可恢复。',
     restoredToast: '已恢复 {n} 个文件', purgedToast: '已彻底删除 {n} 个文件', purgeAllDone: '回收站已清空（本批 {n} 条）',
     uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除空文件夹「{name}」？只有不含文件和子目录的文件夹才能删除。',
     folderDeleted: '文件夹已删除', folderCreatedToast: '已创建文件夹「{name}」',
     tooLarge: '「{name}」超过 {mb} MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
+    claimDone: '秒传 ✅', claimOk: '「{name}」内容已存在，未重复占用存储', dedupedToast: '「{name}」内容重复，已合并为同一份存储',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
@@ -758,11 +759,12 @@ const I18N = {
     runCleanupResult: 'Done: {s} expired shares revoked, {l} expired links deleted, {t} trash files purged; {m} anomaly(s) (object missing)',
     trashHint: 'Items in the trash still count against storage quota; expired ones are deleted automatically.',
     confirmPurgeT: 'Delete forever', confirmPurgeD: 'This deletes {n} file(s) and their storage objects right now, along with their shares and direct links. Cannot be undone.',
-    confirmPurgeAllT: 'Empty trash', confirmPurgeAllD: 'Permanently delete every item in the trash (up to 200 per run). Cannot be undone.',
+    confirmPurgeAllT: 'Empty trash', confirmPurgeAllD: 'Permanently delete trash items now (up to 100 per click; the scheduled job continues). Cannot be undone.',
     restoredToast: 'Restored {n} file(s)', purgedToast: 'Deleted {n} file(s) forever', purgeAllDone: 'Trash emptied ({n} deleted)',
     uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete the empty folder "{name}"? Only folders without files or subfolders can be deleted.',
     folderDeleted: 'Folder deleted', folderCreatedToast: 'Folder "{name}" created',
     tooLarge: '"{name}" exceeds the {mb} MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
+    claimDone: 'Instant ✅', claimOk: '"{name}" already exists — no extra storage used', dedupedToast: '"{name}" was a duplicate; both entries now share one copy',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
@@ -1747,8 +1749,19 @@ function openNewFolderModal(){
 
 const UPLOAD_CHUNK_FALLBACK = 8 * 1024 * 1024;
 const SINGLE_SHOT_MAX = 64 * 1024 * 1024; // 超过就走分片通道
+const SHA_MAX = 256 * 1024 * 1024; // WebCrypto 没有流式摘要，太大的文件不计算哈希（只做写后去重）
 
-function uploadFiles(files){
+/** 浏览器侧 SHA-256（十六进制）；算不了就返回 null，不影响上传 */
+async function sha256Of(file){
+  if (!crypto?.subtle || file.size > SHA_MAX) return null;
+  try {
+    const buf = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch { return null; }
+}
+
+function uploadFiles(files){ (async () => {
   for(const file of files){
     if(maxUploadMb > 0 && file.size > maxUploadMb * 1024 * 1024){ toast(t('tooLarge', {name: file.name, mb: maxUploadMb}), 'err'); continue; }
     const item = document.createElement('div');
@@ -1761,24 +1774,47 @@ function uploadFiles(files){
       if (bar) bar.style.width = Math.max(0, pct) + '%';
       item.querySelector('.pct').textContent = label ?? pct + '%';
     };
-    if (file.size > SINGLE_SHOT_MAX) { uploadChunked(file, setProg, item); continue; }
+    const sha = await sha256Of(file);
+    // 秒传：内容已在库里就一行元数据搞定，一个字节都不用传
+    if (sha) {
+      try {
+        const c = await api('/api/admin/upload/check', { method: 'POST', body: JSON.stringify({ sha256: sha, size: file.size }) });
+        if (c?.exists) {
+          await api('/api/admin/upload/claim', {
+            method: 'POST',
+            body: JSON.stringify({ sha256: sha, name: file.name, folder_id: filesFolder && filesFolder !== 'root' ? filesFolder : null }),
+          });
+          setProg(100, t('claimDone'));
+          toast(t('claimOk', { name: file.name }));
+          loadFiles();
+          continue;
+        }
+      } catch { /* 查不到就当没命中，照常上传 */ }
+    }
+    if (file.size > SINGLE_SHOT_MAX) { uploadChunked(file, setProg, item, sha); continue; }
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     if(filesFolder && filesFolder !== 'root') xhr.setRequestHeader('X-Folder-Id', filesFolder);
+    if (sha) xhr.setRequestHeader('X-Content-Sha256', sha);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = e => setProg(Math.round(e.loaded / e.total * 100));
     xhr.onload = () => {
-      if(xhr.status === 201){ setProg(100, t('uploadDone')); toast(t('uploadOk', {name: file.name})); loadFiles(); }
+      if(xhr.status === 201){
+        let j = null; try { j = JSON.parse(xhr.responseText); } catch {}
+        setProg(100, t('uploadDone'));
+        toast(j?.deduped ? t('dedupedToast', { name: file.name }) : t('uploadOk', { name: file.name }));
+        loadFiles();
+      }
       else { setProg(0, t('uploadFailShort')); toast(t('uploadFail', {name: file.name}), 'err'); }
     };
     xhr.onerror = () => { setProg(0, t('uploadFailShort')); toast(t('uploadFail', {name: file.name}), 'err'); };
     xhr.send(file);
   }
-}
+})(); }
 
 /** 分片上传：init → 逐片 PUT（失败重试 3 次）→ complete；任何异常都 abort 会话 */
-async function uploadChunked(file, setProg, item){
+async function uploadChunked(file, setProg, item, sha){
   let sessionId = null;
   try {
     const init = await api('/api/admin/upload/init', {
@@ -1787,6 +1823,7 @@ async function uploadChunked(file, setProg, item){
         name: file.name,
         size: file.size,
         mime: file.type || 'application/octet-stream',
+        sha256: sha || undefined,
         folder_id: filesFolder && filesFolder !== 'root' ? filesFolder : null,
       }),
     });
@@ -1813,10 +1850,10 @@ async function uploadChunked(file, setProg, item){
       parts.push({ partNumber: i + 1, etag });
       setProg(Math.round(((i + 1) / total) * 95));
     }
-    await api('/api/admin/upload/complete', { method: 'POST', body: JSON.stringify({ id: sessionId, parts }) });
+    const done = await api('/api/admin/upload/complete', { method: 'POST', body: JSON.stringify({ id: sessionId, parts }) });
     sessionId = null;
     setProg(100, t('uploadDone'));
-    toast(t('uploadOk', { name: file.name }));
+    toast(done?.deduped ? t('dedupedToast', { name: file.name }) : t('uploadOk', { name: file.name }));
     loadFiles();
   } catch (e) {
     setProg(0, t('uploadFailShort'));

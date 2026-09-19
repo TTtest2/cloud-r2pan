@@ -109,8 +109,8 @@ class Db {
         if (/sqlite_master/.test(norm)) return /name='settings'/.test(norm) ? { name: "settings" } : { sql: "x" };
         if (/SELECT value FROM settings WHERE key = 'migration_version'/.test(norm)) return { value: "9999" };
         if (/^SELECT 1 FROM directories|^SELECT 1 FROM files WHERE folder_id IS NULL AND path/.test(norm)) return null;
-        if (/^SELECT COALESCE\(SUM\(size\), 0\) AS bytes FROM files/.test(norm)) return { bytes: 0 };
-        if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, created_at FROM upload_sessions WHERE id = \?1/.test(norm)) {
+        if (/AS bytes FROM \(SELECT MIN\(size\) AS s FROM files GROUP BY key\)/.test(norm)) return { bytes: 0 };
+        if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at FROM upload_sessions WHERE id = \?1/.test(norm)) {
           const s = self.sessions.find((x) => x.id === String(binds[0]));
           return s ? { ...s, name: "big.bin", mime: "application/octet-stream", folder_id: null, size_declared: null } : null;
         }
@@ -119,7 +119,7 @@ class Db {
       },
       async all() {
         if (/^SELECT key, value FROM settings/.test(norm)) return { results: self.settingsRows };
-        if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, created_at FROM upload_sessions WHERE created_at < \?1/.test(norm)) {
+        if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at FROM upload_sessions WHERE created_at < \?1/.test(norm)) {
           const cutoff = Number(binds[0]);
           return { results: self.sessions.filter((s) => s.created_at < cutoff).slice(0, Number(binds[1])) };
         }
@@ -131,7 +131,7 @@ class Db {
             id: String(binds[0]),
             key: String(binds[1]),
             upload_id: String(binds[2]),
-            created_at: Number(binds[7]),
+            created_at: Number(binds[8]),
           });
           return { success: true, meta: { changes: 1 } };
         }

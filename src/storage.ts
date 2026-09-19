@@ -63,7 +63,7 @@ export interface StorageProvider {
     partNumber: number,
     body: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array
   ): Promise<StoredPart>;
-  completeMultipart(key: string, uploadId: string, parts: StoredPart[]): Promise<void>;
+  completeMultipart(key: string, uploadId: string, parts: StoredPart[]): Promise<{ etag: string | null }>;
   /** 必须能中止：没 complete 的分片会一直占着存储计费 */
   abortMultipart(key: string, uploadId: string): Promise<void>;
 }
@@ -120,7 +120,8 @@ export function createR2Provider(r2: R2Bucket): StorageProvider {
     },
     async completeMultipart(key, uploadId, parts) {
       const up = r2.resumeMultipartUpload(key, uploadId);
-      await up.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag })) as any);
+      const obj = await up.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag })) as any);
+      return { etag: obj?.httpEtag ? String(obj.httpEtag) : null };
     },
     async abortMultipart(key, uploadId) {
       const up = r2.resumeMultipartUpload(key, uploadId);
@@ -481,6 +482,8 @@ export function createS3Provider(cfg: S3Config): StorageProvider {
       if (!resp.ok || /<Error[\s>]/.test(text)) {
         throw new Error(`S3 completeMultipartUpload failed: ${resp.status} ${text.slice(0, 300)}`);
       }
+      const etag = /<ETag>([^<]+)<\/ETag>/.exec(text)?.[1];
+      return { etag: etag ? decodeXmlText(etag).replace(/"/g, "") : null };
     },
 
     async abortMultipart(key, uploadId) {

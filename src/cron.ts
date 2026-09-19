@@ -20,8 +20,14 @@ import { getSettings } from "./settings";
 import { deleteObjects, expiredTrashIds, purgeFiles } from "./trash";
 import { abortStaleUploads, staleUploadIds } from "./uploads";
 
-/** 单轮每步最多处理多少条 —— 撞 CPU 上限就下一轮接着跑 */
-export const CLEANUP_BATCH = 100;
+/**
+ * 单轮每步最多处理多少条。
+ * 免费档两条天花板决定了这个数：每次调用最多 50 次子请求（D1/R2 往返都算）、
+ * 每条查询最多 100 个绑定参数。50 条一批刚好在两者之内，跑不完下一轮接着来。
+ */
+export const CLEANUP_BATCH = 50;
+/** 中止一次分片上传要花一次 R2 子请求，所以这一步单独收得更紧 */
+export const UPLOAD_REAP_BATCH = 20;
 /** 每轮抽查多少个对象确认字节还在（R2 读操作，免费档 1000 万次/月很宽裕） */
 export const PROBE_SAMPLE = 20;
 
@@ -126,7 +132,7 @@ export async function runScheduledCleanup(env: Env, now = Date.now()): Promise<C
   }
 
   // 分片上传半途而废 = 零散 part 一直占存储，超时一律中止
-  const stale = await staleUploadIds(env, now, CLEANUP_BATCH);
+  const stale = await staleUploadIds(env, now, UPLOAD_REAP_BATCH);
   report.uploads_aborted = await abortStaleUploads(env, stale);
 
   report.missing_objects = await probeObjects(env);

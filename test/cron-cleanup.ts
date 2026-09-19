@@ -10,7 +10,7 @@
  *   npx esbuild test/cron-cleanup.ts --bundle --platform=node --format=esm --loader:.html=text --outfile=.dev/cron-cleanup.mjs
  *   node .dev/cron-cleanup.mjs
  */
-import { CLEANUP_BATCH, runScheduledCleanup } from "../src/cron";
+import { CLEANUP_BATCH, PROBE_SAMPLE, runScheduledCleanup, UPLOAD_REAP_BATCH } from "../src/cron";
 import { invalidateSettingsCache } from "../src/settings";
 
 let failures = 0;
@@ -101,6 +101,13 @@ class Db {
       this.seenLimits.push(Number(binds[1]));
       return this.files.filter((f) => f.deleted_at !== null && f.deleted_at < cutoff).slice(0, limit).map((f) => ({ id: f.id }));
     }
+    if (/^SELECT key, COUNT\(\*\) AS c FROM files WHERE key IN \(([^)]*)\) GROUP BY key/.test(sql)) {
+      const n = binds.length;
+      const ids = binds.slice(0, n).map(String);
+      return ids
+        .map((k) => ({ key: k, c: this.files.filter((f) => f.key === k).length }))
+        .filter((r) => r.c > 0);
+    }
     if (/^SELECT id, key, folder_id FROM files WHERE id IN/.test(sql)) {
       const ids = binds.map(String);
       return this.files.filter((f) => ids.includes(f.id)).map((f) => ({ id: f.id, key: f.key, folder_id: null }));
@@ -112,7 +119,7 @@ class Db {
       return null;
     }
     if (/^DELETE FROM (shares|download_logs|direct_links) WHERE file_id IN/.test(sql)) return null;
-    if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, created_at FROM upload_sessions WHERE created_at < \?1/.test(sql)) {
+    if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at FROM upload_sessions WHERE created_at < \?1/.test(sql)) {
       const cutoff = Number(binds[0]);
       this.seenLimits.push(Number(binds[1]));
       return this.sessions.filter((s) => s.created_at < cutoff).slice(0, Number(binds[1])).map((s) => ({ ...s }));
@@ -123,7 +130,8 @@ class Db {
       this.abortedUploadIds.push(...ids);
       return null;
     }
-    if (/^SELECT id, key FROM files WHERE deleted_at IS NULL ORDER BY RANDOM\(\)/.test(sql)) {
+    if (/^SELECT id, key FROM files WHERE deleted_at IS NULL ORDER BY RANDOM\(\) LIMIT \?1/.test(sql)) {
+      this.seenLimits.push(Number(binds[0]));
       const limit = Number(binds[0]);
       return this.files.filter((f) => !f.deleted_at).slice(0, limit);
     }
@@ -215,8 +223,8 @@ async function main() {
     await runScheduledCleanup(h.env, now);
     const batched = h.db.sqlLog.filter((s) => /^SELECT id FROM (shares|direct_links)/.test(s) || /deleted_at < \?1 ORDER BY deleted_at/.test(s));
     check("三类扫描都带 LIMIT", batched.length >= 3 && batched.every((s) => /LIMIT \?\d/.test(s)), JSON.stringify(batched));
-    check("四类扫描的分批量都是 CLEANUP_BATCH", h.db.seenLimits.length === 4 && h.db.seenLimits.every((n) => n === CLEANUP_BATCH), JSON.stringify(h.db.seenLimits));
-    check("抽查对象也限量", h.db.sqlLog.some((s) => /ORDER BY RANDOM\(\) LIMIT \?1/.test(s)), s0(h.db.sqlLog));
+    const want = [CLEANUP_BATCH, CLEANUP_BATCH, CLEANUP_BATCH, UPLOAD_REAP_BATCH, PROBE_SAMPLE];
+    check("每步的分批量都在免费档预算内", JSON.stringify(h.db.seenLimits) === JSON.stringify(want), JSON.stringify(h.db.seenLimits));
     check("cron 不扫孤儿文件", !h.db.sqlLog.some((s) => /LEFT JOIN shares s ON s\.file_id = f\.id/.test(s)), s0(h.db.sqlLog));
     check("cron 不物理删活文件行", h.db.purgedFileIds.every((id) => ["told"].includes(id)), JSON.stringify(h.db.purgedFileIds));
   }
