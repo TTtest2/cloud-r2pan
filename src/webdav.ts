@@ -43,11 +43,15 @@ function extractInternalPath(urlPath: string): string {
   return normPath(stripped || "/");
 }
 
-/** 从完整 URL 构建 WebDAV href（用于 PROPFIND 响应） */
-function buildHref(baseUrl: string, internalPath: string): string {
+/** 从完整 URL 构建 WebDAV href（集合才带结尾斜杠，客户端会直接拿 href 去请求） */
+function buildHref(baseUrl: string, internalPath: string, isCollection: boolean): string {
   const u = new URL(baseUrl);
-  const clean = internalPath === "/" ? "" : internalPath;
-  return `${u.origin}/webdav${clean}/`;
+  const encoded = internalPath
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/");
+  return `${u.origin}/webdav/${encoded}${encoded && isCollection ? "/" : ""}`;
 }
 
 /** RFC 1123 日期格式 */
@@ -123,13 +127,7 @@ async function directoryExists(env: Env, path: string): Promise<boolean> {
   // directories 表
   const dir: any = await env.db.prepare("SELECT 1 FROM directories WHERE path = ?1").bind(path).first();
   if (dir) return true;
-  // 有文件直接在这个目录下（不是子目录）
-  const child: any = await env.db
-    .prepare("SELECT 1 FROM files WHERE path = ?1 LIMIT 1")
-    .bind(path)
-    .first();
-  if (child) return true;
-  // 有文件以这个目录开头（更深层）—— 也算存在
+  // 有文件在这个目录下（files.path 是完整路径，所以前缀匹配）
   const deeper: any = await env.db
     .prepare("SELECT 1 FROM files WHERE path LIKE ?1 LIMIT 1")
     .bind(path + "/%")
@@ -140,66 +138,39 @@ async function directoryExists(env: Env, path: string): Promise<boolean> {
 /** 列出目录的直接子项（文件 + 子目录） */
 async function listDirChildren(env: Env, path: string): Promise<{ files: DBFile[]; dirs: string[] }> {
   path = path === "/" ? "" : path; // 查询时根目录用 "" 前缀
-  const nextSlash = path ? path + "/" : "/";
+  const childPrefix = path === "" ? "/" : path + "/";
+  /** 去掉父目录前缀得到相对路径；不属于该目录时返回 "" */
+  const relativeName = (fullPath: string) =>
+    fullPath.startsWith(childPrefix) ? fullPath.slice(childPrefix.length) : "";
 
   // 1. 直接子文件：path = 父路径 + "/" + name（精确）
   const { results: files } = await env.db
     .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path LIKE ?1")
-    .bind(path === "" ? "/%" : path + "/%")
+    .bind(childPrefix + "%")
     .all<DBFile>();
 
-  // 过滤出直接子文件（不是子目录里的）
   const directFiles: DBFile[] = [];
   const subDirSet = new Set<string>();
 
   for (const f of files) {
-    // f.path 类似 "/foo" 或 "/dir/file.txt"
-    const relPath = f.path;
-    if (path === "") {
-      // 根目录下："/foo" → 直接子项；"/sub/foo" → 子目录项
-      const parts = relPath.split("/").filter(Boolean);
-      if (parts.length === 1) {
-        directFiles.push(f);
-      } else if (parts.length >= 2) {
-        subDirSet.add("/" + parts[0]);
-      }
-    } else {
-      // 子目录下：path="/dir"，f.path="/dir/sub" 或 "/dir/file.txt"
-      const rest = relPath.slice(nextSlash.length - 1); // 去掉 "/dir" 前缀
-      if (!rest) continue;
-      const slashIdx = rest.indexOf("/");
-      if (slashIdx < 0) {
-        // 直接子文件
-        directFiles.push(f);
-      } else {
-        // 属于某个子目录
-        subDirSet.add(nextSlash + rest.slice(0, slashIdx));
-      }
-    }
+    const rest = relativeName(f.path);
+    if (!rest) continue;
+    const slashIdx = rest.indexOf("/");
+    if (slashIdx < 0) directFiles.push(f);
+    else subDirSet.add(childPrefix + rest.slice(0, slashIdx));
   }
 
   // 2. directories 表里显式创建的子目录
-  const dirPrefix = path === "" ? "/" : nextSlash;
   const { results: explicitDirs } = await env.db
     .prepare("SELECT path FROM directories WHERE path LIKE ?1 AND path != ?2")
-    .bind(dirPrefix + "%", path === "" ? "/" : path)
+    .bind(childPrefix + "%", path === "" ? "/" : path)
     .all<{ path: string }>();
 
   for (const d of explicitDirs) {
-    if (path === "") {
-      // 只取第一段
-      const parts = d.path.split("/").filter(Boolean);
-      if (parts.length >= 1) subDirSet.add("/" + parts[0]);
-    } else {
-      const rest = d.path.slice(nextSlash.length - 1);
-      if (!rest) continue;
-      const slashIdx = rest.indexOf("/");
-      if (slashIdx < 0) {
-        subDirSet.add(d.path);
-      } else {
-        subDirSet.add(nextSlash + rest.slice(0, slashIdx));
-      }
-    }
+    const rest = relativeName(d.path);
+    if (!rest) continue;
+    const slashIdx = rest.indexOf("/");
+    subDirSet.add(slashIdx < 0 ? d.path : childPrefix + rest.slice(0, slashIdx));
   }
 
   return { files: directFiles, dirs: Array.from(subDirSet).sort() };
@@ -216,36 +187,8 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-/** 为单个文件生成 propstat XML */
+/** 为单个文件生成 propstat XML（resourcetype 必须为空，否则客户端会当成目录） */
 function filePropstat(file: DBFile, href: string): string {
-  const displayName = escapeXml(file.name);
-  const mime = escapeXml(file.mime || "application/octet-stream");
-  const lastModified = tsToRfc1123(file.uploaded_at);
-  const creationDate = new Date(file.uploaded_at).toISOString();
-  return `
-  <response>
-    <href>${escapeXml(href)}</href>
-    <propstat>
-      <prop>
-        <resourcetype><collection/></resourcetype>
-      </prop>
-      <status>HTTP/1.1 200 OK</status>
-    </propstat>
-    <propstat>
-      <prop>
-        <getcontentlength>${file.size}</getcontentlength>
-        <getcontenttype>${mime}</getcontenttype>
-        <getetag>"${file.id}"</getetag>
-        <getlastmodified>${lastModified}</getlastmodified>
-        <creationdate>${creationDate}</creationdate>
-        <displayname>${displayName}</displayname>
-      </prop>
-      <status>HTTP/1.1 200 OK</status>
-    </propstat>
-  </response>`;
-}
-
-function filePropstatAsFile(file: DBFile, href: string): string {
   const displayName = escapeXml(file.name);
   const mime = escapeXml(file.mime || "application/octet-stream");
   const lastModified = tsToRfc1123(file.uploaded_at);
@@ -275,7 +218,7 @@ function filePropstatAsFile(file: DBFile, href: string): string {
 
 /** 目录自身的 propstat */
 function dirPropstat(path: string, baseUrl: string): string {
-  const href = buildHref(baseUrl, path);
+  const href = buildHref(baseUrl, path, true);
   const displayName = path === "/" ? "/" : path.split("/").filter(Boolean).pop() || "";
   return `
   <response>
@@ -383,20 +326,18 @@ async function handlePropfind(
   const depth = req.headers.get("depth") || "1"; // 0 / 1 / infinity
   const baseUrl = url.origin;
 
-  const pathExists = await directoryExists(env, internalPath);
-  const file = pathExists && internalPath !== "/"
+  // files.path 存的是文件完整路径，所以按 path 精确查一次即可判定"是文件"
+  const file = internalPath !== "/"
     ? await env.db
-        .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path = ?1 AND name = ?2")
-        .bind(internalPath.slice(0, internalPath.lastIndexOf("/")) || "/",
-              internalPath.split("/").filter(Boolean).pop() || "")
+        .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path = ?1")
+        .bind(internalPath)
         .first<DBFile>()
     : null;
 
-  // 检查这到底是个文件还是目录
-  if (file && file.path === internalPath) {
+  if (file) {
     // 这是个文件
-    const href = buildHref(baseUrl, internalPath);
-    const body = multistatusXML([filePropstatAsFile(file, href)]);
+    const href = buildHref(baseUrl, internalPath, false);
+    const body = multistatusXML([filePropstat(file, href)]);
     return new Response(body, {
       status: 207,
       headers: { "Content-Type": "application/xml; charset=utf-8" },
@@ -404,7 +345,7 @@ async function handlePropfind(
   }
 
   // 应该是目录
-  if (!pathExists) {
+  if (!(await directoryExists(env, internalPath))) {
     return new Response("Not Found", { status: 404 });
   }
 
@@ -426,8 +367,8 @@ async function handlePropfind(
       responses.push(dirPropstat(d, baseUrl));
     }
     for (const f of files) {
-      const href = buildHref(baseUrl, f.path);
-      responses.push(filePropstatAsFile(f, href));
+      const href = buildHref(baseUrl, f.path, false);
+      responses.push(filePropstat(f, href));
     }
   } else {
     // infinity —— 递归列出所有
@@ -454,8 +395,8 @@ async function collectAll(
     await collectAll(env, d, baseUrl, responses);
   }
   for (const f of files) {
-    const href = buildHref(baseUrl, f.path);
-    responses.push(filePropstatAsFile(f, href));
+    const href = buildHref(baseUrl, f.path, false);
+    responses.push(filePropstat(f, href));
   }
 }
 
