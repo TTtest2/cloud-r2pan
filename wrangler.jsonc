@@ -40,6 +40,14 @@
   // 生产环境：通过 Cloudflare 控制台 → Worker → Settings → Secrets 添加
   //          或执行 npx wrangler secret put admin
 
+  // ═══════════ 定时任务（Cron Triggers） ═══════════
+  // 撤销过期分享、删除到期直链、彻底清除过期回收站条目、抽查丢字节的对象。
+  // 每小时一次足够（这些都不是分钟级需求），且免费档最多只能有 5 条 cron；
+  // 单次运行受免费档 10 ms CPU 约束，src/cron.ts 里每一步都带 LIMIT 分批。
+  "triggers": {
+    "crons": ["17 * * * *"]
+  },
+
   // 将 public/*.html 作为文本模块导入
   "rules": [
     { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }

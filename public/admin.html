@@ -421,6 +421,8 @@ const I18N = {
     // 回收站
     trashView: '🗑 回收站', liveView: '📁 文件列表', trashedAt: '删除时间', trashEmpty: '回收站是空的',
     restore: '恢复', purge: '彻底删除', batchRestore: '批量恢复', batchPurge: '批量彻底删除', purgeAll: '清空回收站',
+    runCleanup: '⏱ 立即运行定时清理',
+    runCleanupResult: '清理完成：撤销 {s} 条过期分享、删除 {l} 条到期直链、彻底清除 {t} 个回收站文件；异常 {m} 个（对象缺失）',
     trashHint: '回收站里的文件仍占用存储配额；超过保留期会被自动彻底清除。',
     confirmPurgeT: '彻底删除', confirmPurgeD: '将立即删除 {n} 个文件及其存储对象，并连带清掉它们的分享与直链。此操作不可恢复。',
     confirmPurgeAllT: '清空回收站', confirmPurgeAllD: '将立即彻底删除回收站里的全部条目（每批最多 200 条）。此操作不可恢复。',
@@ -749,6 +751,8 @@ const I18N = {
     // Recycle bin
     trashView: '🗑 Trash', liveView: '📁 Files', trashedAt: 'Deleted', trashEmpty: 'Trash is empty',
     restore: 'Restore', purge: 'Delete forever', batchRestore: 'Restore selected', batchPurge: 'Delete selected forever', purgeAll: 'Empty trash',
+    runCleanup: '⏱ Run scheduled cleanup now',
+    runCleanupResult: 'Done: {s} expired shares revoked, {l} expired links deleted, {t} trash files purged; {m} anomaly(s) (object missing)',
     trashHint: 'Items in the trash still count against storage quota; expired ones are deleted automatically.',
     confirmPurgeT: 'Delete forever', confirmPurgeD: 'This deletes {n} file(s) and their storage objects right now, along with their shares and direct links. Cannot be undone.',
     confirmPurgeAllT: 'Empty trash', confirmPurgeAllD: 'Permanently delete every item in the trash (up to 200 per run). Cannot be undone.',
@@ -1506,7 +1510,7 @@ async function loadFiles(){
       <input id="fo-search" type="search" value="${esc(filesQuery)}" placeholder="${esc(t('fileSearchPh'))}" autocomplete="off"
         style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;min-width:180px">
       ${!filesTrash && fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
-      ${filesTrash ? `<button class="btn sm danger" id="tp-purge-all">${esc(t('purgeAll'))}</button><span style="opacity:.7;font-size:13px">${esc(t('trashHint'))}</span>`
+      ${filesTrash ? `<button class="btn sm danger" id="tp-purge-all">${esc(t('purgeAll'))}</button><button class="btn sm" id="tp-run">${esc(t('runCleanup'))}</button><span style="opacity:.7;font-size:13px">${esc(t('trashHint'))}</span>`
         : `<span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>`}
     </div>
     ${filesTrash ? '' : `<div class="dropzone" id="dropzone">
@@ -1647,6 +1651,21 @@ async function loadFiles(){
   if (br) br.onclick = () => restoreIds([...selFiles]);
   const bp = $('#bb-purge');
   if (bp) bp.onclick = () => purgeIds([...selFiles]);
+  const run = $('#tp-run');
+  if (run) run.onclick = async () => {
+    run.disabled = true;
+    try {
+      const r = await api('/api/admin/cleanup/run', { method: 'POST', body: '{}' });
+      toast(t('runCleanupResult', {
+        s: r.shares_revoked ?? 0, l: r.links_deleted ?? 0, t: r.trash_purged ?? 0, m: (r.missing_objects ?? []).length,
+      }));
+      loadFiles();
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      run.disabled = false;
+    }
+  };
   const pa = $('#tp-purge-all');
   if (pa) pa.onclick = async () => {
     if (!(await confirmDialog(t('confirmPurgeAllT'), t('confirmPurgeAllD')))) return;

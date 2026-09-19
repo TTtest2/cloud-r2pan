@@ -12,6 +12,7 @@ import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
 import { applyDisposition, inlineCsp, wantsInline } from "./preview";
 import { escapeLike } from "./market";
 import { deleteObjects, purgeFiles, removeFiles, restoreFiles } from "./trash";
+import { runScheduledCleanup } from "./cron";
 import {
   declaredSize,
   formatMb,
@@ -766,6 +767,12 @@ export async function handleAdminApi(
     return json({ password: password ?? "" });
   }
 
+  // ── 手动跑一轮定时清理（与 cron 同一个入口，返回报告） ──
+  if (path === "/api/admin/cleanup/run" && method === "POST") {
+    const report = await runScheduledCleanup(env);
+    return json(report);
+  }
+
   // ── 清理失效分享（过期 / 已撤销 / 达上限） + 孤儿 files + 孤儿 R2 对象 ──
   if (path === "/api/admin/shares/cleanup" && method === "POST") {
     const now = Date.now();
@@ -792,38 +799,18 @@ export async function handleAdminApi(
     ).all<{ id: string; key: string }>();
 
     const orphanIds = (orphans.results ?? []).map((o) => o.id);
-    const orphanKeys = (orphans.results ?? []).map((o) => o.key);
 
-    // 3. 删除孤儿 files 的 DB 记录 + 关联 download_logs
-    if (orphanIds.length > 0) {
-      // D1 支持 IN (...) 参数绑定
-      const placeholders = orphanIds.map((_, i) => `?${i + 1}`).join(", ");
-      await env.db.batch([
-        env.db.prepare(`DELETE FROM download_logs WHERE file_id IN (${placeholders})`).bind(...orphanIds),
-        env.db.prepare(`DELETE FROM files WHERE id IN (${placeholders})`).bind(...orphanIds),
-      ]);
-    }
-
-    // 4. 异步清理孤儿存储对象（不阻塞响应，批量删除可能慢）
-    if (orphanKeys.length > 0) {
-      ctx.waitUntil(
-        (async () => {
-          const st = await storage(env);
-          for (const key of orphanKeys) {
-            try {
-              await st.delete(key);
-            } catch {
-              // 删除失败不影响 DB 清理结果，静默跳过
-            }
-          }
-        })()
-      );
-    }
+    // 3. 孤儿 files 进回收站 —— 只是没被分享过而已，不该被一键销毁；
+    //    保留期为 0 时（关闭回收站）才等价于原来的物理删除。
+    const s = await getSettings(env);
+    const trashed = await removeFiles(env, orphanIds, s.trashRetentionDays);
+    ctx.waitUntil(deleteObjects(env, trashed.keys));
 
     return json({
       ok: true,
       deleted_shares: deleted.meta.changes ?? 0,
-      deleted_orphan_files: orphanIds.length,
+      orphan_files: trashed.soft + trashed.purged,
+      orphan_trashed: trashed.soft,
     });
   }
 

@@ -37,6 +37,7 @@ function placeholders(ids: (string | number)[]): string {
 
 /** 查出这些 id 里确实存在、且状态匹配 scope 的行 */
 async function rowsForDelete(env: Env, ids: string[], scope: "live" | "trash" | "any") {
+  if (!ids.length) return [];
   const extra = scope === "live" ? " AND deleted_at IS NULL" : scope === "trash" ? " AND deleted_at IS NOT NULL" : "";
   const where = `id IN (${placeholders(ids)})${extra}`;
   const { results } = await env.db

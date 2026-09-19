@@ -13,6 +13,7 @@ import {
 import { findCodeByString, formatCodeStatus, checkCodeUsable, isCodeLenientFormat } from "./codes";
 import { clientIp, rateLimit, rateLimitRetryAfter } from "./auth";
 import { parseMarketParams, queryMarket } from "./market";
+import { runScheduledCleanup } from "./cron";
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -27,6 +28,16 @@ export default {
         { zh: "服务器内部错误，请稍后重试。", en: "An internal server error occurred. Please try again later." }
       );
     }
+  },
+
+  /** wrangler.jsonc 里的 triggers.cron 每小时指向这里 */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    await ensureSchema(env);
+    ctx.waitUntil(
+      runScheduledCleanup(env)
+        .then((report) => console.log("[cron] cleanup " + JSON.stringify(report)))
+        .catch((err) => console.error("[cron] cleanup failed:", err))
+    );
   },
 };
 
