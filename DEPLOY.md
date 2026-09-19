@@ -111,6 +111,9 @@ https://cloud-r2pan.<你的账号>.workers.dev
 
 部署完成后，数据库会在用户首次访问时**自动建表**，不需要手动 SQL。
 
+> 用 `wrangler deploy` 走命令行时，`wrangler.jsonc` 里的 `database_id` 必须填真实值
+> （仓库里留空是为了不泄露你的 D1 id）；Workers Builds 走控制台绑定，不受这个空值影响。
+
 ---
 
 ## 6. 验证
@@ -120,6 +123,31 @@ https://cloud-r2pan.<你的账号>.workers.dev
 https://cloud-r2pan.<你的账号>.workers.dev/admin
 ```
 用第 4 步设置的 `admin` 密码登录。
+
+不想开浏览器也可以直接探接口（错密钥应当 401，不是 500 —— 500 说明 `admin` Secret 没设上）：
+
+```bash
+curl -i -X POST https://<你的域名>/api/admin/login -H 'content-type: application/json' -d '{"key":"随便乱写"}'
+```
+
+这一批改动上线后值得逐项确认（都在后台里点得到）：
+
+| 检查 | 期望 |
+|---|---|
+| 文件列表搜索框 + 分页 | 输入关键字能过滤、翻页不重画全表 |
+| 回收站 | 删除文件 → 切到"回收站"能看到 → 恢复 → 原分享链接又能下 |
+| 定时清理 | 后台"回收站"页点"立即运行定时清理"，返回一份 JSON 报告；`npx wrangler deployments status` 里 cron 已注册 |
+| 分片上传 | 传一个 >64 MB 的文件，进度条按片推进且最终成功 |
+| 秒传 | 同一个文件再传一次，提示"内容已存在，未重复占用存储"，概览的已用存储不翻倍 |
+| 目录分享 | 选中目录点"分享目录"，打开链接能进子目录、能逐个下载 |
+| 内联预览 | 分享页/后台里图片、PDF、音视频出现"预览"按钮，新标签页直接显示 |
+
+线上确认 cron 是否注册：
+
+```bash
+npx wrangler deployments status   # 看当前版本
+npx wrangler tail                 # 整点后应当看到 [cron] cleanup {...} 一行
+```
 
 ---
 

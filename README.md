@@ -50,23 +50,32 @@ public/
 | `GET /` | 按设置跳转到 `/market` 或 `/admin` |
 | `GET /admin` | 管理后台 |
 | `ANY /api/admin/*` | 管理 API（会话 Cookie + 可选 IP 白名单） |
-| `GET /s/:token` | 分享页 |
-| `GET /s/:token/info` | 分享元信息（状态、是否需要密码 / 人机验证） |
+| `GET /s/:token` | 分享页（文件或目录） |
+| `GET /s/:token/info` | 分享元信息（状态、`kind`、是否需要密码 / 人机验证） |
 | `POST /s/:token/verify` | 校验访问密码 → 颁发下载令牌（限流 10 次/分钟/IP+token） |
-| `GET /s/:token/download` | 下载主流程 |
+| `GET /s/:token/children?dir=` | 浏览被分享的目录（限流 60 次/分钟/IP+token） |
+| `GET /s/:token/download` | 下载主流程；目录分享需带 `?file=<id>`；`?inline=1` 可内联预览 |
 | `GET /d/:id` | 独立直链下载 |
 | `GET /market`、`GET /api/market` | 下载市场页面与查询 |
 | `GET /api/codes/status?code=` | 公开查询激活码余额（限流 30 次/分钟/IP） |
 | `GET /oauth/{providers,start,callback,session}`、`POST /oauth/logout` | OAuth 登录 |
+| `POST /api/admin/upload` | 单次上传（≤100 MB 请求体） |
+| `POST /api/admin/upload/check`、`/claim` | 秒传：查指纹命中 → 只写一行元数据 |
+| `POST /api/admin/upload/init`、`PUT /upload/part`、`POST /upload/complete`、`DELETE /upload` | 分片上传 |
+| `POST /api/admin/cleanup/run` | 立即跑一轮定时清理（与 cron 同一入口，返回报告） |
 | `/webdav/*` | WebDAV 挂载点（HTTP Basic Auth） |
 
 ---
 
 ## 数据模型（D1）
 
-`files` `shares` `direct_links` `folders` `download_logs` `login_logs` `traffic_stats`
-`turnstile_visits` `banned_ips` `settings` `oauth_states` `oauth_providers`
+`files` `shares` `direct_links` `folders` `upload_sessions` `download_logs` `login_logs`
+`traffic_stats` `turnstile_visits` `banned_ips` `settings` `oauth_states` `oauth_providers`
 `activation_plans` `activation_codes`
+
+`files` 除基本字段外还有三个"生命周期/指纹"列：`deleted_at`（非空 = 在回收站里）、
+`sha256`（浏览器算的，秒传用）、`etag`（存储回执，写后去重用）。
+`shares.folder_id` 非空 = 目录分享，此时 `file_id` 是 `''` 哨兵。
 
 表结构在首次请求时自动创建，增量迁移由 `settings.migration_version` 记录进度，
 每条迁移只执行一次。
@@ -83,9 +92,15 @@ public/
 
 ### 分享与直链
 
-`shares` 是"带闸门的一次性授权"（有效期、次数上限、访问密码、可选上架市场），
-`direct_links` 是"拿了就能下"的独立入口，两者都只引用 `file_id`；
-删除文件时按 `file_id` 连带清掉 `shares`、`direct_links`、`download_logs`。
+一条分享要么指向一个文件、要么指向一个目录（`folder_id` + `file_id=''`）。目录分享可浏览
+（`/s/:token/children`，只能看到分享子树，面包屑不会越过分享根），文件逐个下载，
+有效期 / 次数 / 口令等闸门对整条分享共用一份名额。
+
+`shares` 是"带闸门的一次性授权"，`direct_links` 是"拿了就能下"的独立入口 —— 后者只服务
+单个文件，所以目录分享既不上架下载市场，也不派生直链。
+
+文件被移进回收站期间，它的分享与直链一律读不到（所有对外读路径都带 `deleted_at IS NULL`），
+恢复后原样可用；只有彻底删除才会连带清掉 `shares`、`direct_links`、`download_logs`。
 
 ---
 
@@ -120,6 +135,13 @@ public/
 - **WebDAV 凭据**：口令以 PBKDF2-SHA256 存储（5 万轮；workerd 对迭代数有 10 万硬上限）。
   每个 IP 每分钟允许 8 次失败，超限后不再做口令派生；验证通过的凭据在 isolate 内缓存 60 秒。
   旧格式口令登录成功时就地升级。
+- **内联预览**：`?inline=1` 只在 `src/preview.ts` 的精确 MIME 白名单内生效（图片 / PDF /
+  纯文本 / 音视频）。这个 Worker 与分享页同源，能被浏览器当文档解析的用户内容就是 XSS 面，
+  所以 `text/html`、`xhtml`、`image/svg+xml`（可嵌脚本）、各类脚本文本一律排除，
+  并且响应带 `X-Content-Type-Options: nosniff` + 专用 CSP。前端藏不藏"预览"按钮无所谓，
+  **服务端永远有最终决定权**：不在白名单就退回 `attachment`。
+- **目录分享的边界**：浏览与下载都限定在被分享目录的子树内，`dir`/`file` 参数越界一律拒绝，
+  面包屑不会显示分享根之上的任何一级路径。
 - **OAuth 回跳**：`?redirect=` 只接受站内绝对路径，协议相对地址与外部 URL 一律回落首页。
 - **开放重定向 / XSS**：设置项 `turnstile_sitekey_override` 限定字符集，前端写进
   HTML 属性时统一转义；所有页面下发时带 CSP、`X-Frame-Options`、`Referrer-Policy` 等。
@@ -127,16 +149,71 @@ public/
 
 ---
 
-## 上传限制
+## 上传与存储配额
 
-`limits.ts` 是管理端上传与 WebDAV PUT 共用的闸门：
+`limits.ts` 是管理端上传、分片上传与 WebDAV PUT 共用的闸门：
 
-- `max_upload_mb`（默认 100，可小不可大 —— Workers 请求体本身就卡在 100 MB）：
-  先用声明的 Content-Length 挡一道（省一次写入），落盘后再用存储层回报的真实 size
-  复核上限与配额，超标就把已写入的对象删掉、行不落库。
-  注意不能给 `req.body` 插一层 `pipeThrough` 计数：R2 只接受长度已知的流
-  （请求体本身或 `FixedLengthStream`），管道出来的匿名流会被直接拒绝。
-- `storage_quota_mb`（默认 0 = 不限）：按真实写入量事后判定，超配额则回滚并返回 507。
+- `max_upload_mb`（默认 100，上限可设到 50 GB）：先用声明的 Content-Length 挡一道，
+  落盘后再用存储层回报的真实 size 复核上限与配额，超标就删对象、行不落库。
+  声明可以撒谎，真实字节数不能。
+- `storage_quota_mb`（默认 0 = 不限）：按去重后的真实占用判断，超配额返回 507。
+- ⚠️ 不能给 `req.body` 插一层 `pipeThrough` 计数：R2 只接受**长度已知**的流
+  （请求体本身或 `FixedLengthStream`），管道出来的匿名流会被直接拒绝 ——
+  这条踩过一次，全站上传全挂。存储层必须拿到 `req.body` 本尊。
+
+两条上传通道：
+
+| 通道 | 触发条件 | 说明 |
+|---|---|---|
+| 单次 `POST /api/admin/upload` | ≤64 MB | 一次请求体，上限就是 Workers 的 100 MB |
+| 分片 `init` → `part` → `complete` | >64 MB | 8 MiB 一片（协议最小 5 MiB）、最多 10000 片、单片 ≤96 MiB；失败自动重试 3 次，异常会 `abort` 会话 |
+
+分片合并后一样用 `head()` 的真实体积复核，然后才落库。会话表 `upload_sessions` 有 24 小时
+TTL，超时未完成的由定时任务 `abort`（残留分片是要计费的）。
+
+### 内容去重与秒传
+
+两条互补指纹，都带方案前缀（`sha256:` / `etag:`），不同方案永不互撞：
+
+- `sha256`：浏览器用 WebCrypto 算（≤256 MB；再大就不算，因为没有流式摘要）。
+  命中 `POST /api/admin/upload/check` → `POST /api/admin/upload/claim`，一个字节都不传。
+- `etag`：存储后端写完对象的回执（单次上传是内容 MD5，分片是 `"<md5>-N"`），服务端零成本
+  可得；发现同指纹同体积已有对象就删掉刚写的那份、把行改指已有 key。
+
+只有管理员上传通道会带 `sha256`（可信通道），WebDAV / S3 直连写进行为 `NULL`、不参与秒传。
+去重之后同一个 key 可能被多行引用：**能不能删对象只看剩余引用行数**（`trash.ts` 负责数），
+配额与概览统计也一律按 key 去重。
+
+## 回收站与定时清理
+
+删除默认只打 `files.deleted_at`：对象保留、分享/直链原地保留（恢复后继续能用），
+到期由 cron 彻底清除。保留期 `trash_retention_days` 默认 7 天、最长 90、0 = 关闭回收站。
+软删除期间对象**仍占存储**，所以概览里的 `storage.bytes` 含回收站，另有 `trash_bytes` 显示可回收体积。
+目录判空不算回收站条目；目录若已被删除，恢复出来的文件退回根目录。
+
+`wrangler.jsonc` 的 `triggers.crons` 每小时跑一次 `src/cron.ts`：撤销过期分享（保留行）、
+删除到期直链、彻底清除到期回收站条目、中止超时分片、随机抽查若干对象看字节是否还在（只报告不处置）。
+后台"回收站"页可以点"立即运行定时清理"看同一份报告。
+**cron 不会无人监督地删活文件**：那个"没有任何分享引用的文件"扫描只在手动清理里，
+而且现在也只是把文件送进回收站。
+
+## 免费档配额对照（本仓库参数就是这么定的）
+
+Cloudflare 免费档实测（2026-09）：
+
+| 项目 | 免费额度 | 这里的取值 |
+|---|---|---|
+| R2 存储 | 10 GB·月 | 回收站最长留 90 天、默认 7 天，因为软删除照样占额度 |
+| R2 Class A（写 / 列举 / 分片上传） | 100 万/月 | 8 MiB 一片：1 GB 文件 ≈ 128 次写 |
+| R2 Class B（读） | 1000 万/月 | 每次下载 1 次读；cron 每轮抽查 20 个对象 |
+| R2 对象大小 / 分片数 | 5 TiB / 最多 10000 片 | 单文件上限最高设到 50 GB（8 MiB × 10000 ≈ 80 GB 为协议顶） |
+| Workers 请求体 | 100 MB（免费与付费相同） | 所以才有分片通道；单片限 96 MiB |
+| Workers CPU | **10 ms/次** | 不做 Worker 内 zip 打包、不在服务端算大文件哈希；cron 每步分批 |
+| Workers 子请求 | 50 次/请求 | `CLEANUP_BATCH = 50`，分片中止 `UPLOAD_REAP_BATCH = 20`（一次 abort 一次子请求） |
+| Workers Cron | 最多 5 条 | 只用 1 条（每小时） |
+| D1 查询数 | 50 次/请求 | 同上，所有清理步骤都分批 |
+| D1 绑定参数 | 100 个/条查询 | 所有 `IN (...)` 一律按 50 分批（软删除还要多绑一个时间戳） |
+| D1 单库大小 | 500 MB | 元数据极小；真正吃额度的是 `download_logs`，后台有清理入口 |
 
 ---
 
@@ -151,8 +228,10 @@ npm test            # 用 esbuild 打包 test/*.ts 后逐个跑，断言驱动�
 ```
 
 `npm test` 里每个测试文件是一个独立可执行的断言脚本，跑在内存假 D1 上：
-签名对照（`test/s3-signer.ts` 用 `node:crypto` 独立复算 SigV4）、下载闸门顺序、
-目录树解析与迁移、WebDAV 全方法读写、管理端各接口边界。加新测试就是往 `test/` 放一个 `.ts`。
+签名对照（`test/s3-signer.ts` 用 `node:crypto` 独立复算 SigV4）、下载闸门顺序、内联预览白名单、
+目录树解析与迁移、WebDAV 全方法读写、管理端各接口边界、回收站端到端、定时清理的分批与处置语义、
+分片上传契约（流必须原样交给存储层、真实体积才是判据）、目录分享与去重/秒传/引用计数。
+加新测试就是往 `test/` 放一个 `.ts`。
 
 本地跑 Worker：`npx wrangler dev`（需在 `.dev.vars` 里写 `admin=你的密钥`）。
 
