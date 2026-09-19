@@ -111,13 +111,23 @@ public/
 → 月度流量限额 → 同 IP 重复下载（可自动封禁）→ 原子扣减次数 → Range 流式输出 → 异步记日志
 ```
 
-两处关键设计：
+三处关键设计：
 
 - **扣次排在所有闸门之后**。原子更新
   `UPDATE shares SET download_count = download_count + 1 WHERE id = ? AND download_count < ?`
   既保证并发不超卖，又保证被密码/验证码/限流挡掉的请求不会白烧分享人的名额。
+  没有设上限的分享与直链同样累加这一列（走单条不带 `download_count < ?` 的 UPDATE）——
+  后台列表与市场里的"已下载次数"看的就是它，不计数会永远显示 0。
+- **206 只回被请求的那一段**。`Range` 由存储层的分段读取实现：R2 的分片参数必须写成
+  `get(key, { range: { offset, length } })`，顶层 `offset/length` 是被废弃的老写法，
+  运行时会**静默忽略**并把整个对象推回去（响应就成了"Content-Range 正确、body 完整"）。
+  S3 后端则发真实的 `Range:` 头。两者都由 `test/storage-range.ts` 钉住。
 - **日志与流量统计走 `ctx.waitUntil`**，不占用响应时间；流量累加由 SQL 完成
   （不是 JS 读-改-写），跨月自动清零且幂等。
+
+> 自查提示：`max_downloads_per_ip` 与"重复下载自动封禁"是按 **share/直链 + IP** 计数的，
+> 管理员用同一个分享连续点两次下载就可能把自己的出口 IP 关进 `banned_ips`（默认 24 小时）。
+> 测试完记得在后台"IP 封禁"里解掉。
 
 ---
 

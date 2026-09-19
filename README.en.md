@@ -65,7 +65,18 @@ banned IP → link exists / not revoked / not expired / cap not hit → password
 ```
 
 The slot decrement happens **after** every gate, so blocked requests (including wrong passwords)
-can never burn a share's download allowance.
+can never burn a share's download allowance. Shares and direct links with **no** cap take the same
+column anyway (a second, unguarded `UPDATE`), because that is what the console and marketplace
+display as "times downloaded" — skipping it would leave them showing 0 forever.
+
+A `206` carries exactly the requested bytes. R2 wants the slice nested — `get(key, { range: {
+offset, length } })`; the legacy top-level `offset`/`length` keys are silently ignored and push the
+whole object back under a correct-looking `Content-Range`. The S3 backend sends a real `Range:`
+header. `test/storage-range.ts` pins both shapes.
+
+> Heads-up for your own testing: the duplicate gate counts per *share/direct-link + IP*, so tapping
+> download twice on one link with `max_downloads_per_ip` and auto-ban on will lock your own egress
+> IP in `banned_ips` (24 h by default). Unban it from the console afterwards.
 
 ## Security notes
 
