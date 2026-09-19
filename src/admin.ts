@@ -13,6 +13,7 @@ import { applyDisposition, inlineCsp, wantsInline } from "./preview";
 import { escapeLike } from "./market";
 import { deleteObjects, purgeFiles, removeFiles, restoreFiles } from "./trash";
 import { runScheduledCleanup } from "./cron";
+import { CHUNK_MAX, abortUpload, completeUpload, initUpload, partTooLarge, uploadPart } from "./uploads";
 import {
   declaredSize,
   formatMb,
@@ -558,6 +559,89 @@ export async function handleAdminApi(
       return json({ error: msg(req, "数据库写入失败，请重试", "Database write failed. Please retry.") }, 500);
     }
     return json({ ok: true, id, name, size: resultSize }, 201);
+  }
+
+  // ── 分片上传：init / part / complete / abort（突破单请求 100 MB） ──
+  if (path === "/api/admin/upload/init" && method === "POST") {
+    const body = await readJson<{ name?: string; size?: number; mime?: string; folder_id?: string | null }>(req);
+    const raw = (body.name ?? "").trim();
+    if (!raw) return json({ error: msg(req, "缺少文件名", "Missing file name") }, 400);
+    let name: string;
+    try {
+      name = sanitizeName(decodeURIComponent(raw));
+    } catch {
+      name = sanitizeName(raw);
+    }
+    let folderId: string | null = null;
+    const rawFolder = typeof body.folder_id === "string" ? body.folder_id.trim() : "";
+    if (rawFolder) {
+      const fo = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(rawFolder).first<{ id: string }>();
+      if (!fo) return json({ error: msg(req, "目标文件夹不存在", "Target folder not found") }, 400);
+      folderId = fo.id;
+    }
+    const declared = Number.isFinite(body.size) && (body.size as number) > 0 ? Math.floor(body.size as number) : null;
+    const settings = await getSettings(env);
+    const r = await initUpload(env, settings, {
+      name,
+      mime: (body.mime ?? "").trim() || "application/octet-stream",
+      folder_id: folderId,
+      size: declared,
+    });
+    if (!r.ok) {
+      return json(
+        { error: r.rejection.code, limit_mb: formatMb(r.rejection.limitBytes), message: uploadRejectMsg(req, r.rejection) },
+        r.rejection.status
+      );
+    }
+    return json({ ok: true, id: r.session.id, chunk_size: r.chunk_size, max_part_mb: formatMb(CHUNK_MAX) }, 201);
+  }
+
+  if (path === "/api/admin/upload/part" && method === "PUT") {
+    const sp = new URL(req.url).searchParams;
+    const sessionId = sp.get("id") ?? "";
+    const partNumber = Number(sp.get("part"));
+    if (!sessionId || !req.body) return json({ error: msg(req, "缺少会话或请求体", "Missing session id or body") }, 400);
+    if (partTooLarge(req)) {
+      return json({ error: "too_large", limit_mb: formatMb(CHUNK_MAX) }, 413);
+    }
+    try {
+      const r = await uploadPart(env, sessionId, partNumber, req.body);
+      if (!r.ok) return json({ error: r.code }, r.status);
+      return json({ ok: true, etag: r.etag, part: partNumber });
+    } catch (err: any) {
+      console.error("upload part failed:", err);
+      return json({ error: msg(req, "分片上传失败，请重试", "Part upload failed. Please retry.") }, 502);
+    }
+  }
+
+  if (path === "/api/admin/upload/complete" && method === "POST") {
+    const body = await readJson<{ id?: string; parts?: { partNumber: number; etag: string }[] }>(req);
+    if (!body.id) return json({ error: msg(req, "缺少会话 id", "Missing upload id") }, 400);
+    const settings = await getSettings(env);
+    try {
+      const r = await completeUpload(env, settings, body.id, body.parts ?? []);
+      if (!r.ok) {
+        return json(
+          {
+            error: r.code,
+            ...(typeof r.limitBytes === "number" ? { limit_mb: formatMb(r.limitBytes) } : {}),
+          },
+          r.status
+        );
+      }
+      return json({ ok: true, id: r.id, name: r.name, size: r.size }, 201);
+    } catch (err: any) {
+      console.error("upload complete failed:", err);
+      return json({ error: msg(req, "合并分片失败，请重试", "Multipart complete failed. Please retry.") }, 502);
+    }
+  }
+
+  if (path === "/api/admin/upload" && method === "DELETE") {
+    const sessionId = new URL(req.url).searchParams.get("id") ?? "";
+    if (!sessionId) return json({ error: msg(req, "缺少会话 id", "Missing upload id") }, 400);
+    const ok = await abortUpload(env, sessionId);
+    if (!ok) return json({ error: msg(req, "会话不存在或已结束", "Upload session not found") }, 404);
+    return json({ ok: true });
   }
 
   // ── 批量删除文件（默认进回收站；mode=purge 彻底删除） ──
@@ -1360,9 +1444,10 @@ export async function handleAdminApi(
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
     const gb = num(body.traffic_limit_gb);
     if (gb !== null) patch.traffic_limit_bytes = String(Math.round(gb * 1024 ** 3));
-    // 单文件上限：Workers 的请求体本身就卡在 100 MB，写更大只是自欺
+    // 单文件上限：分片上传之后不再受"一次请求 100 MB"约束，
+    // 真正的天花板是存储配额与这里设的值（合并完会用真实字节数复核，撒谎没用）
     const uploadMb = num(body.max_upload_mb);
-    if (uploadMb !== null) patch.max_upload_mb = String(Math.min(100, Math.floor(uploadMb)));
+    if (uploadMb !== null) patch.max_upload_mb = String(Math.min(51_200, Math.max(0, Math.floor(uploadMb))));
     const quotaMb = num(body.storage_quota_mb); // 0 = 不限
     if (quotaMb !== null) patch.storage_quota_mb = String(Math.floor(quotaMb));
     // 回收站保留期：0 = 关闭（删除即物理删除）；上限 90 天，因为软删除仍占存储

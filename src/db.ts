@@ -213,6 +213,18 @@ const MIGRATION_STATEMENTS: string[] = [
   // ═══════════ 回收站：软删除（deleted_at 非空 = 在回收站里，对象仍占存储） ═══════════
   "ALTER TABLE files ADD COLUMN deleted_at INTEGER",
   "CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted_at)",
+  // ═══════════ 分片上传会话（id 就是将来 files.id，合并成功后该行被删掉） ═══════════
+  `CREATE TABLE IF NOT EXISTS upload_sessions(
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    upload_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    folder_id TEXT,
+    size_declared INTEGER,
+    created_at INTEGER NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_upload_sessions_created ON upload_sessions(created_at)",
 ];
 
 /**

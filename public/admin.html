@@ -413,7 +413,7 @@ const I18N = {
     colExpires: '有效期', colStatus: '状态', colReason: '原因', colBannedAt: '封禁时间', colUntil: '到期',
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
-    dropDesc: '单文件最大 {mb} MB（服务端强制校验）· 直传 R2 对象存储',
+    dropDesc: '超过 64 MB 自动分片上传（8 MiB 一片 · 失败重试）· 直传对象存储',
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', dlFile: '下载', pvFile: '预览', del: '删除',
     newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
     folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
@@ -475,7 +475,7 @@ const I18N = {
     siteName: '站点名称', siteNameD: '显示在分享页和后台标题',
     trafficLimit: '月度流量限额（GB）',
     maxUpload: '单文件上限（MB）',
-    maxUploadD: '服务端会真的拦下超限上传（413），不再只是前端提示；0 表示只受 Workers 100 MB 请求体限制约束。',
+    maxUploadD: '服务端会真的拦下超限上传（413）：分片通道下用合并后的真实字节数复核，谎报体积无效。0 表示不设上限（仍受存储配额约束）。',
     storageQuota: '总存储配额（MB）',
     storageQuotaD: '按已用存储判断，超限的上传会被拒绝并回滚（507）；0 表示不限。',
     trashDays: '回收站保留天数',
@@ -743,7 +743,7 @@ const I18N = {
     colExpires: 'Expires', colStatus: 'Status', colReason: 'Reason', colBannedAt: 'Banned at', colUntil: 'Until',
     // 文件
     dropTitle: 'Drop files here or click to upload',
-    dropDesc: 'Max {mb} MB per file (enforced server-side) · Stored directly in R2',
+    dropDesc: 'Files over 64 MB upload in 8 MiB chunks with automatic retry · stored directly in object storage',
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', dlFile: 'Download', pvFile: 'Preview', del: 'Delete',
     newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
     folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
@@ -805,7 +805,7 @@ const I18N = {
     siteName: 'Site Name', siteNameD: 'Shown on the share page and console title',
     trafficLimit: 'Monthly Traffic Quota (GB)',
     maxUpload: 'Per-file Limit (MB)',
-    maxUploadD: 'The server now really rejects oversized uploads (413) instead of only warning in the UI. 0 = limited only by the Workers 100 MB request-body cap.',
+    maxUploadD: 'Oversized uploads really are rejected server-side (413): with chunked upload the merged object is re-checked by actual bytes, so lying about the size does not work. 0 = no cap (storage quota still applies).',
     storageQuota: 'Storage Quota (MB)',
     storageQuotaD: 'Uploads that would exceed the quota are refused and rolled back (507). 0 = unlimited.',
     trashDays: 'Trash Retention (days)',
@@ -1737,6 +1737,9 @@ function openNewFolderModal(){
   inp.onkeydown = e => { if(e.key === 'Enter') submit(); };
 }
 
+const UPLOAD_CHUNK_FALLBACK = 8 * 1024 * 1024;
+const SINGLE_SHOT_MAX = 64 * 1024 * 1024; // 超过就走分片通道
+
 function uploadFiles(files){
   for(const file of files){
     if(maxUploadMb > 0 && file.size > maxUploadMb * 1024 * 1024){ toast(t('tooLarge', {name: file.name, mb: maxUploadMb}), 'err'); continue; }
@@ -1745,22 +1748,74 @@ function uploadFiles(files){
     item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
       <div class="prog"><i></i></div><span class="pct">0%</span>`;
     $('#upload-list').prepend(item);
+    const setProg = (pct, label) => {
+      const bar = item.querySelector('.prog i');
+      if (bar) bar.style.width = Math.max(0, pct) + '%';
+      item.querySelector('.pct').textContent = label ?? pct + '%';
+    };
+    if (file.size > SINGLE_SHOT_MAX) { uploadChunked(file, setProg, item); continue; }
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     if(filesFolder && filesFolder !== 'root') xhr.setRequestHeader('X-Folder-Id', filesFolder);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-    xhr.upload.onprogress = e => {
-      const pct = Math.round(e.loaded / e.total * 100);
-      item.querySelector('.prog i').style.width = pct + '%';
-      item.querySelector('.pct').textContent = pct + '%';
-    };
+    xhr.upload.onprogress = e => setProg(Math.round(e.loaded / e.total * 100));
     xhr.onload = () => {
-      if(xhr.status === 201){ item.querySelector('.pct').textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles(); }
-      else { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); }
+      if(xhr.status === 201){ setProg(100, t('uploadDone')); toast(t('uploadOk', {name: file.name})); loadFiles(); }
+      else { setProg(0, t('uploadFailShort')); toast(t('uploadFail', {name: file.name}), 'err'); }
     };
-    xhr.onerror = () => { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
+    xhr.onerror = () => { setProg(0, t('uploadFailShort')); toast(t('uploadFail', {name: file.name}), 'err'); };
     xhr.send(file);
+  }
+}
+
+/** 分片上传：init → 逐片 PUT（失败重试 3 次）→ complete；任何异常都 abort 会话 */
+async function uploadChunked(file, setProg, item){
+  let sessionId = null;
+  try {
+    const init = await api('/api/admin/upload/init', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: file.name,
+        size: file.size,
+        mime: file.type || 'application/octet-stream',
+        folder_id: filesFolder && filesFolder !== 'root' ? filesFolder : null,
+      }),
+    });
+    sessionId = init.id;
+    const chunk = Number(init.chunk_size) > 0 ? Number(init.chunk_size) : UPLOAD_CHUNK_FALLBACK;
+    const total = Math.max(1, Math.ceil(file.size / chunk));
+    const parts = [];
+    for (let i = 0; i < total; i++) {
+      const blob = file.slice(i * chunk, Math.min(file.size, (i + 1) * chunk));
+      let etag = null;
+      for (let attempt = 1; !etag && attempt <= 3; attempt++) {
+        const r = await fetch(`/api/admin/upload/part?id=${encodeURIComponent(sessionId)}&part=${i + 1}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: blob,
+        });
+        if (r.ok) etag = (await r.json()).etag;
+        else {
+          const e = await r.json().catch(() => ({}));
+          if (attempt === 3) throw new Error(e.error || String(r.status));
+          await new Promise(res => setTimeout(res, 800 * attempt));
+        }
+      }
+      parts.push({ partNumber: i + 1, etag });
+      setProg(Math.round(((i + 1) / total) * 95));
+    }
+    await api('/api/admin/upload/complete', { method: 'POST', body: JSON.stringify({ id: sessionId, parts }) });
+    sessionId = null;
+    setProg(100, t('uploadDone'));
+    toast(t('uploadOk', { name: file.name }));
+    loadFiles();
+  } catch (e) {
+    setProg(0, t('uploadFailShort'));
+    toast(t('uploadFail', { name: file.name }) + (e?.message ? ' · ' + e.message : ''), 'err');
+  } finally {
+    if (sessionId) fetch(`/api/admin/upload?id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch(() => {});
+    item.classList.add('done');
   }
 }
 
@@ -2686,7 +2741,7 @@ async function loadSettings(){
     <div class="glass group">
       <div class="row">
         <div class="info"><div class="t">📦 ${esc(t('maxUpload'))}</div><div class="d">${esc(t('maxUploadD'))}</div></div>
-        <input type="number" id="st-max-upload" min="1" max="100" step="1" value="${s.max_upload_mb ?? 100}">
+        <input type="number" id="st-max-upload" min="1" max="51200" step="1" value="${s.max_upload_mb ?? 100}">
       </div>
       <div class="row">
         <div class="info"><div class="t">🗄️ ${esc(t('storageQuota'))}</div><div class="d">${esc(t('storageQuotaD'))}</div></div>

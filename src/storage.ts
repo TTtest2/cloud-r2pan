@@ -29,6 +29,12 @@ export interface StoragePutResult {
   etag?: string;
 }
 
+/** 已上传分片的回执（S3/R2 都是 partNumber + etag 这一对） */
+export interface StoredPart {
+  partNumber: number;
+  etag: string;
+}
+
 export interface StorageProvider {
   kind: "r2" | "s3";
   /** 上传对象（body 可以是 ReadableStream 或 ArrayBuffer） */
@@ -43,6 +49,23 @@ export interface StorageProvider {
   delete(key: string): Promise<void>;
   /** 获取对象元数据（不含 body） */
   head(key: string): Promise<{ size: number; contentType: string } | null>;
+
+  // ═══════ 分片上传（突破单次请求 100 MB 请求体上限） ═══════
+  /**
+   * 开启一次多段上传，返回 uploadId。
+   * ⚠️ uploadPart 的流必须是"长度已知"的流（即请求体本身或 FixedLengthStream），
+   *    与 put() 同源的限制 —— 不要 pipeThrough 套一层计数，否则整个通道都会被拒。
+   */
+  createMultipart(key: string, opts: { contentType?: string }): Promise<{ uploadId: string }>;
+  uploadPart(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    body: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array
+  ): Promise<StoredPart>;
+  completeMultipart(key: string, uploadId: string, parts: StoredPart[]): Promise<void>;
+  /** 必须能中止：没 complete 的分片会一直占着存储计费 */
+  abortMultipart(key: string, uploadId: string): Promise<void>;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -82,6 +105,26 @@ export function createR2Provider(r2: R2Bucket): StorageProvider {
       const obj = await r2.head(key);
       if (!obj) return null;
       return { size: obj.size, contentType: obj.httpMetadata?.contentType ?? "application/octet-stream" };
+    },
+
+    async createMultipart(key, opts) {
+      const up = await r2.createMultipartUpload(key, {
+        httpMetadata: opts.contentType ? { contentType: opts.contentType } : undefined,
+      });
+      return { uploadId: up.uploadId };
+    },
+    async uploadPart(key, uploadId, partNumber, body) {
+      const up = r2.resumeMultipartUpload(key, uploadId);
+      const part = await up.uploadPart(partNumber, body as any);
+      return { partNumber: part.partNumber, etag: part.etag };
+    },
+    async completeMultipart(key, uploadId, parts) {
+      const up = r2.resumeMultipartUpload(key, uploadId);
+      await up.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag })) as any);
+    },
+    async abortMultipart(key, uploadId) {
+      const up = r2.resumeMultipartUpload(key, uploadId);
+      await up.abort();
     },
   };
 }
@@ -252,6 +295,21 @@ async function signS3Request(
   return { url, headers };
 }
 
+/** 拼进请求体的值只需要保证不会提前闭合标签 */
+function escapeXmlAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** 从响应 XML 里取出的值要还原实体 */
+function decodeXmlText(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 /** 构造 S3 Provider —— 通用 S3 兼容存储 */
 export function createS3Provider(cfg: S3Config): StorageProvider {
   const endpoint = cfg.endpoint.replace(/\/+$/, "");
@@ -379,6 +437,58 @@ export function createS3Provider(cfg: S3Config): StorageProvider {
         size,
         contentType: resp.headers.get("Content-Type") || "application/octet-stream",
       };
+    },
+
+    async createMultipart(key, opts) {
+      const headers: Record<string, string> = {};
+      if (opts.contentType) headers["Content-Type"] = opts.contentType;
+      const resp = await doFetch("POST", key, { query: new URLSearchParams({ uploads: "" }), headers });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => resp.statusText);
+        throw new Error(`S3 createMultipartUpload failed: ${resp.status} ${text}`);
+      }
+      const xml = await resp.text();
+      const uploadId = /<UploadId>([^<]+)<\/UploadId>/.exec(xml)?.[1];
+      if (!uploadId) throw new Error("S3 createMultipartUpload: 响应里没有 UploadId");
+      return { uploadId: decodeXmlText(uploadId) };
+    },
+
+    async uploadPart(key, uploadId, partNumber, body) {
+      const query = new URLSearchParams({ partNumber: String(partNumber), uploadId });
+      const resp = await doFetch("PUT", key, { query, body });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => resp.statusText);
+        throw new Error(`S3 uploadPart ${partNumber} failed: ${resp.status} ${text}`);
+      }
+      const etag = resp.headers.get("etag")?.replace(/"/g, "");
+      if (!etag) throw new Error(`S3 uploadPart ${partNumber}: 响应里没有 ETag`);
+      return { partNumber, etag };
+    },
+
+    async completeMultipart(key, uploadId, parts) {
+      const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+      const xml =
+        `<CompleteMultipartUpload>` +
+        sorted.map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${escapeXmlAttr(p.etag)}</ETag></Part>`).join("") +
+        `</CompleteMultipartUpload>`;
+      const resp = await doFetch("POST", key, {
+        query: new URLSearchParams({ uploadId }),
+        headers: { "Content-Type": "application/xml" },
+        body: xml,
+      });
+      const text = await resp.text().catch(() => "");
+      // S3 会在 HTTP 200 的响应体里塞 <Error>（分片顺序/ETag 不匹配时），只看状态码会假装成功
+      if (!resp.ok || /<Error[\s>]/.test(text)) {
+        throw new Error(`S3 completeMultipartUpload failed: ${resp.status} ${text.slice(0, 300)}`);
+      }
+    },
+
+    async abortMultipart(key, uploadId) {
+      const resp = await doFetch("DELETE", key, { query: new URLSearchParams({ uploadId }) });
+      if (!resp.ok && resp.status !== 404) {
+        const text = await resp.text().catch(() => resp.statusText);
+        throw new Error(`S3 abortMultipartUpload failed: ${resp.status} ${text}`);
+      }
     },
   };
 }

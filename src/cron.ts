@@ -18,6 +18,7 @@
 import type { Env } from "./types";
 import { getSettings } from "./settings";
 import { deleteObjects, expiredTrashIds, purgeFiles } from "./trash";
+import { abortStaleUploads, staleUploadIds } from "./uploads";
 
 /** 单轮每步最多处理多少条 —— 撞 CPU 上限就下一轮接着跑 */
 export const CLEANUP_BATCH = 100;
@@ -123,6 +124,10 @@ export async function runScheduledCleanup(env: Env, now = Date.now()): Promise<C
     report.objects_deleted = r.keys.length;
     await deleteObjects(env, r.keys);
   }
+
+  // 分片上传半途而废 = 零散 part 一直占存储，超时一律中止
+  const stale = await staleUploadIds(env, now, CLEANUP_BATCH);
+  report.uploads_aborted = await abortStaleUploads(env, stale);
 
   report.missing_objects = await probeObjects(env);
   return report;

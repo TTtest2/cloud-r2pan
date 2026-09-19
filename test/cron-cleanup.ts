@@ -36,6 +36,8 @@ class Db {
   revokedIds: string[] = [];
   deletedLinkIds: string[] = [];
   purgedFileIds: string[] = [];
+  abortedUploadIds: string[] = [];
+  sessions: { id: string; key: string; upload_id: string; name: string; mime: string; folder_id: string | null; size_declared: number | null; created_at: number }[] = [];
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -110,6 +112,17 @@ class Db {
       return null;
     }
     if (/^DELETE FROM (shares|download_logs|direct_links) WHERE file_id IN/.test(sql)) return null;
+    if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, created_at FROM upload_sessions WHERE created_at < \?1/.test(sql)) {
+      const cutoff = Number(binds[0]);
+      this.seenLimits.push(Number(binds[1]));
+      return this.sessions.filter((s) => s.created_at < cutoff).slice(0, Number(binds[1])).map((s) => ({ ...s }));
+    }
+    if (/^DELETE FROM upload_sessions WHERE id IN/.test(sql)) {
+      const ids = binds.map(String);
+      this.sessions = this.sessions.filter((s) => !ids.includes(s.id));
+      this.abortedUploadIds.push(...ids);
+      return null;
+    }
     if (/^SELECT id, key FROM files WHERE deleted_at IS NULL ORDER BY RANDOM\(\)/.test(sql)) {
       const limit = Number(binds[0]);
       return this.files.filter((f) => !f.deleted_at).slice(0, limit);
@@ -142,6 +155,10 @@ function env(now: number) {
     { id: "told", key: "files/told", deleted_at: now - 30 * 86_400_000 },
     { id: "trecent", key: "files/trecent", deleted_at: now - 60_000 },
   ];
+  db.sessions = [
+    { id: "u-old", key: "files/u-old", upload_id: "up-old", name: "a.iso", mime: "application/octet-stream", folder_id: null, size_declared: null, created_at: now - 3 * 86_400_000 },
+    { id: "u-new", key: "files/u-new", upload_id: "up-new", name: "b.iso", mime: "application/octet-stream", folder_id: null, size_declared: null, created_at: now - 60_000 },
+  ];
   const r2 = {
     async get(key: string) {
       return { body: new Uint8Array(4), size: 4, httpEtag: "e", httpMetadata: {}, key };
@@ -151,6 +168,14 @@ function env(now: number) {
     },
     async delete(key: string) {
       DELETED_KEYS.push(key);
+    },
+    resumeMultipartUpload(key: string, uploadId: string) {
+      return {
+        uploadId,
+        async abort() {
+          DELETED_KEYS.push("abort:" + key);
+        },
+      };
     },
   };
   return { env: { db, r2, admin: "sekret" } as any, db, deletedKeys: DELETED_KEYS };
@@ -190,7 +215,7 @@ async function main() {
     await runScheduledCleanup(h.env, now);
     const batched = h.db.sqlLog.filter((s) => /^SELECT id FROM (shares|direct_links)/.test(s) || /deleted_at < \?1 ORDER BY deleted_at/.test(s));
     check("三类扫描都带 LIMIT", batched.length >= 3 && batched.every((s) => /LIMIT \?\d/.test(s)), JSON.stringify(batched));
-    check("三类扫描的分批量都是 CLEANUP_BATCH", h.db.seenLimits.length === 3 && h.db.seenLimits.every((n) => n === CLEANUP_BATCH), JSON.stringify(h.db.seenLimits));
+    check("四类扫描的分批量都是 CLEANUP_BATCH", h.db.seenLimits.length === 4 && h.db.seenLimits.every((n) => n === CLEANUP_BATCH), JSON.stringify(h.db.seenLimits));
     check("抽查对象也限量", h.db.sqlLog.some((s) => /ORDER BY RANDOM\(\) LIMIT \?1/.test(s)), s0(h.db.sqlLog));
     check("cron 不扫孤儿文件", !h.db.sqlLog.some((s) => /LEFT JOIN shares s ON s\.file_id = f\.id/.test(s)), s0(h.db.sqlLog));
     check("cron 不物理删活文件行", h.db.purgedFileIds.every((id) => ["told"].includes(id)), JSON.stringify(h.db.purgedFileIds));
@@ -215,6 +240,18 @@ async function main() {
     h.db.settings.trash_retention_days = "0";
     const report = await runScheduledCleanup(h.env, now);
     check("保留期 0 → 没有到期条目可清", report.trash_purged === 0 && !h.db.sqlLog.some((s) => /deleted_at < \?1 ORDER BY deleted_at/.test(s)), JSON.stringify(report));
+  }
+
+  console.log("\n[6] 超时未完成的分片上传");
+  {
+    const now = Date.now();
+    invalidateSettingsCache();
+    const h = env(now);
+    const report = await runScheduledCleanup(h.env, now);
+    check("中止一条超时会话", report.uploads_aborted === 1 && h.db.abortedUploadIds.join(",") === "u-old", JSON.stringify(report));
+    check("没完成的分片被 abort", h.deletedKeys.includes("abort:files/u-old"), JSON.stringify(h.deletedKeys));
+    check("还在传的那条不动", h.db.sessions.some((s) => s.id === "u-new"));
+    check("abort 不会顺手删掉对象本身", !h.deletedKeys.includes("files/u-new") && !h.deletedKeys.includes("files/fx"), JSON.stringify(h.deletedKeys));
   }
 
   console.log(`\n${failures === 0 ? "\x1b[32m全部通过\x1b[0m" : `\x1b[31m${failures} 项失败\x1b[0m`}\n`);
