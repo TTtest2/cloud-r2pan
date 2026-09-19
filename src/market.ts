@@ -68,7 +68,7 @@ export function parseMarketParams(sp: URLSearchParams): MarketParams {
  * SQLite 的 LIKE 里 % 和 _ 是通配符：不转义的话，搜索框输入一个 "%"
  * 就能列出所有分享。转义符同时要通过 ESCAPE '\' 声明，否则反斜杠按字面匹配。
  */
-function escapeLike(s: string): string {
+export function escapeLike(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 

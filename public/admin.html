@@ -414,9 +414,10 @@ const I18N = {
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
     dropDesc: '单文件最大 {mb} MB（服务端强制校验）· 直传 R2 对象存储',
-    allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', dlFile: '下载', del: '删除',
+    allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', dlFile: '下载', pvFile: '预览', del: '删除',
     newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
     folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
+    fileSearchPh: '搜索文件名…',
     uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除空文件夹「{name}」？只有不含文件和子目录的文件夹才能删除。',
     folderDeleted: '文件夹已删除', folderCreatedToast: '已创建文件夹「{name}」',
     tooLarge: '「{name}」超过 {mb} MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
@@ -732,9 +733,10 @@ const I18N = {
     // 文件
     dropTitle: 'Drop files here or click to upload',
     dropDesc: 'Max {mb} MB per file (enforced server-side) · Stored directly in R2',
-    allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', dlFile: 'Download', del: 'Delete',
+    allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', dlFile: 'Download', pvFile: 'Preview', del: 'Delete',
     newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
     folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
+    fileSearchPh: 'Search file name…',
     uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete the empty folder "{name}"? Only folders without files or subfolders can be deleted.',
     folderDeleted: 'Folder deleted', folderCreatedToast: 'Folder "{name}" created',
     tooLarge: '"{name}" exceeds the {mb} MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
@@ -1051,6 +1053,14 @@ document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
 const $ = (s, el=document) => el.querySelector(s);
 const $$ = (s, el=document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// 与 src/preview.ts 的服务端白名单一致 —— 只决定"预览"按钮要不要出现，放行与否服务端说了算
+const canPreview = mime => {
+  const m = String(mime || '').split(';')[0].trim().toLowerCase();
+  if (!m || m === 'application/octet-stream' || m === 'text/html' || m === 'image/svg+xml') return false;
+  return /^(image|audio)\//.test(m) || m === 'application/pdf'
+    || /^text\/(plain|csv|markdown)$/.test(m)
+    || /^video\/(mp4|webm|ogg|quicktime)$/.test(m);
+};
 
 function fmtSize(n){
   n = Number(n)||0;
@@ -1442,12 +1452,25 @@ function wireSelection(set, ids){
 
 /* ═══════════ 文件 ═══════════ */
 let filesFolder = null; // null=全部 | 'root'=根目录 | 其他=文件夹 id
+let filesPage = 1;
+let filesQuery = '';
+let filesSortKey = 'uploaded_at';
+let filesSortDir = 'desc';
+let filesTotalPages = 1;
+const FILES_PAGE_SIZE = 50;
+const filePages = total => Math.max(1, Math.ceil((Number(total) || 0) / FILES_PAGE_SIZE));
+const sortMark = key => filesSortKey === key ? (filesSortDir === 'asc' ? ' ↑' : ' ↓') : ' ↕';
 
 async function loadFiles(){
   let folders = [];
   try { ({ folders } = await api('/api/admin/folders')); } catch {}
-  const q = filesFolder ? `?folder=${encodeURIComponent(filesFolder)}` : '';
-  const { files } = await api('/api/admin/files' + q);
+  const sp = new URLSearchParams({ page: String(filesPage), size: String(FILES_PAGE_SIZE), sort: filesSortKey, dir: filesSortDir });
+  if (filesFolder) sp.set('folder', filesFolder);
+  if (filesQuery) sp.set('q', filesQuery);
+  let { files, total } = await api('/api/admin/files?' + sp.toString());
+  total = Number(total) || 0;
+  filesTotalPages = filePages(total);
+  if (!files.length && filesPage > 1) { filesPage--; return loadFiles(); }
   const fmap = Object.fromEntries(folders.map(f => [f.id, String(f.path || f.name).replace(/^\//, '')]));
   const targetName = (filesFolder && filesFolder !== 'root' && fmap[filesFolder]) ? fmap[filesFolder] : t('uploadToRoot');
   const viewName = filesFolder === 'root' ? t('folderFilterRoot') : (filesFolder && fmap[filesFolder]) ? `📁 ${fmap[filesFolder]}` : t('folderFilterAll');
@@ -1459,6 +1482,8 @@ async function loadFiles(){
         <option value="root">${esc(t('folderFilterRoot'))}</option>
         ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(fmap[f.id])}（${f.file_count}）</option>`).join('')}
       </select>
+      <input id="fo-search" type="search" value="${esc(filesQuery)}" placeholder="${esc(t('fileSearchPh'))}" autocomplete="off"
+        style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;min-width:180px">
       ${fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
       <span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>
     </div>
@@ -1470,10 +1495,10 @@ async function loadFiles(){
     </div>
     <div id="upload-list"></div>
     <div class="glass section">
-      <div class="section-title"><h2>📁 ${esc(viewName)}（${files.length}）</h2></div>
+      <div class="section-title"><h2>📁 ${esc(viewName)}（${esc(t('totalN', { n: total }))}）</h2></div>
       ${files.length ? `
       <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th class="ck-cell">${ckHead}</th><th>${esc(t('colName'))}</th><th>${esc(t('colFolder'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:230px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th class="ck-cell">${ckHead}</th><th class="sortable" data-sort="name">${esc(t('colName'))}${sortMark('name')}</th><th>${esc(t('colFolder'))}</th><th class="sortable" data-sort="size">${esc(t('colSize'))}${sortMark('size')}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th class="sortable" data-sort="uploaded_at">${esc(t('colUploaded'))}${sortMark('uploaded_at')}</th><th style="width:300px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
             <td class="ck-cell">${ckbox(f.id)}${ficon(f.name)}</td>
@@ -1485,12 +1510,19 @@ async function loadFiles(){
             <td class="num">${fmtTime(f.uploaded_at)}</td>
             <td><div class="actions-cell">
               <a class="btn sm" href="/api/admin/files/${encodeURIComponent(f.id)}/download">⬇ ${esc(t('dlFile'))}</a>
+              ${canPreview(f.mime) ? `<a class="btn sm" href="/api/admin/files/${encodeURIComponent(f.id)}/download?inline=1" target="_blank" rel="noopener">🔍 ${esc(t('pvFile'))}</a>` : ''}
               <button class="btn sm primary" data-share="${f.id}">${esc(t('createShare'))}</button>
               <button class="btn sm danger" data-del="${f.id}" data-name="${esc(f.name)}">${esc(t('del'))}</button>
             </div></td>
           </tr>`).join('')}
         </tbody>
-      </table></div>` : `<div class="empty"><div class="icon">📭</div>${esc(t('noFiles'))}</div>`}
+      </table></div>
+      ${filePages(total) > 1 ? `
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:14px 0 2px;font-size:13px">
+        <button class="btn sm" id="fp-prev" ${filesPage <= 1 ? 'disabled style="opacity:.4;pointer-events:none"' : ''}>${esc(t('prev'))}</button>
+        <span style="opacity:.75">${esc(t('pageOf', { a: filesPage, b: filePages(total) }))}</span>
+        <button class="btn sm" id="fp-next" ${filesPage >= filePages(total) ? 'disabled style="opacity:.4;pointer-events:none"' : ''}>${esc(t('next'))}</button>
+      </div>` : ''}` : `<div class="empty"><div class="icon">📭</div>${esc(filesQuery ? t('noMatch') : t('noFiles'))}</div>`}
     </div>
     <div class="batch-bar" id="batch-bar">
       <div class="bb-row">
@@ -1509,7 +1541,29 @@ async function loadFiles(){
 
   const sel = $('#fo-filter');
   sel.value = filesFolder || '';
-  sel.onchange = () => { filesFolder = sel.value || null; selFiles.clear(); loadFiles(); };
+  sel.onchange = () => { filesFolder = sel.value || null; filesPage = 1; selFiles.clear(); loadFiles(); };
+  const searchEl = $('#fo-search');
+  let searchTimer = null;
+  searchEl.oninput = () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      const v = searchEl.value.trim();
+      if (v === filesQuery) return;
+      filesQuery = v; filesPage = 1; loadFiles();
+    }, 300);
+  };
+  const fp = $('#fp-prev'), fn = $('#fp-next');
+  if (fp) fp.onclick = () => { if (filesPage > 1) { filesPage--; loadFiles(); } };
+  if (fn) fn.onclick = () => { if (filesPage < filesTotalPages) { filesPage++; loadFiles(); } };
+  $$('.sortable').forEach(el => {
+    el.style.cursor = 'pointer';
+    el.onclick = () => {
+      const k = el.dataset.sort;
+      if (filesSortKey === k) filesSortDir = filesSortDir === 'asc' ? 'desc' : 'asc';
+      else { filesSortKey = k; filesSortDir = k === 'name' ? 'asc' : 'desc'; }
+      filesPage = 1; loadFiles();
+    };
+  });
   $('#fo-new').onclick = openNewFolderModal;
   const delBtn = $('#fo-del');
   if(delBtn) delBtn.onclick = async () => {

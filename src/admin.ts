@@ -10,6 +10,7 @@ import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, 
 import { getStorageProvider as storage } from "./storage";
 import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
 import { applyDisposition, inlineCsp, wantsInline } from "./preview";
+import { escapeLike } from "./market";
 import {
   declaredSize,
   formatMb,
@@ -405,20 +406,46 @@ export async function handleAdminApi(
     return json({ ok: true });
   }
 
-  // ── 文件列表 ──────────────────────────────────────
+  // ── 文件列表（分页 + 搜索 + 排序）──────────────────
   if (path === "/api/admin/files" && method === "GET") {
-    const folder = new URL(req.url).searchParams.get("folder"); // null=全部 | "root"=根目录 | 其他=文件夹 id
-    let where = "";
-    if (folder === "root") where = "WHERE f.folder_id IS NULL";
-    else if (folder) where = "WHERE f.folder_id = ?1";
-    const stmt = env.db.prepare(
-      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.folder_id,
-              (SELECT COUNT(*) FROM shares s WHERE s.file_id = f.id) AS share_count,
-              (SELECT COALESCE(SUM(s.download_count), 0) FROM shares s WHERE s.file_id = f.id) AS download_count
-       FROM files f ${where} ORDER BY f.uploaded_at DESC`
-    );
-    const { results } = folder && folder !== "root" ? await stmt.bind(folder).all() : await stmt.all();
-    return json({ files: results ?? [] });
+    const sp = new URL(req.url).searchParams;
+    const folder = sp.get("folder"); // null=全部 | "root"=根目录 | 其他=文件夹 id
+    const q = sp.get("q")?.trim() ?? "";
+    const page = Math.max(1, Number(sp.get("page")) || 1);
+    const size = Math.min(200, Math.max(10, Number(sp.get("size")) || 50));
+    const sortKey = sp.get("sort");
+    const sortCol =
+      sortKey === "name" ? "f.name COLLATE NOCASE" : sortKey === "size" ? "f.size" : "f.uploaded_at";
+    const sortDir = sp.get("dir") === "asc" ? "ASC" : "DESC";
+
+    const frags: string[] = [];
+    const binds: (string | number)[] = [];
+    if (folder === "root") frags.push("f.folder_id IS NULL");
+    else if (folder) {
+      frags.push("f.folder_id = ?");
+      binds.push(folder);
+    }
+    if (q) {
+      frags.push("f.name LIKE ? ESCAPE '\\'");
+      binds.push(`%${escapeLike(q)}%`);
+    }
+    const where = frags.length ? `WHERE ${frags.join(" AND ")}` : "";
+
+    // 分享数/下载数用一次聚合 JOIN 取，避免每个文件两趟相关子查询
+    const shareAgg = `(SELECT file_id, COUNT(*) AS n, COALESCE(SUM(download_count), 0) AS d FROM shares GROUP BY file_id)`;
+    const [countRow, pageRows] = await Promise.all([
+      env.db.prepare(`SELECT COUNT(*) AS c FROM files f ${where}`).bind(...binds).first<{ c: number }>(),
+      env.db
+        .prepare(
+          `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.folder_id,
+                  COALESCE(sc.n, 0) AS share_count, COALESCE(sc.d, 0) AS download_count
+           FROM files f LEFT JOIN ${shareAgg} sc ON sc.file_id = f.id
+           ${where} ORDER BY ${sortCol} ${sortDir}, f.id DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...binds, size, (page - 1) * size)
+        .all<{ id: string; name: string; size: number; mime: string; uploaded_at: number; folder_id: string | null; share_count: number; download_count: number }>(),
+    ]);
+    return json({ files: pageRows?.results ?? [], total: countRow?.c ?? 0, page, size });
   }
 
   // ── 管理员直接下载（不生成分享/直链，也不受公开下载的那套限制约束） ──
