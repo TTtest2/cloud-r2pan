@@ -10,10 +10,8 @@ import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, 
 import { getStorageProvider as storage } from "./storage";
 import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
 import {
-  cappedStream,
   declaredSize,
   formatMb,
-  isOverLimitError,
   postUploadRejection,
   preUploadRejection,
   usedStorageBytes,
@@ -477,10 +475,12 @@ export async function handleAdminApi(
       );
     }
 
-    const body = settings.maxUploadBytes > 0 ? cappedStream(req.body, settings.maxUploadBytes) : req.body;
+    // 注意：这里必须把 req.body 原样交给存储层。R2 只接受"长度已知"的流
+    // （请求体本身或 FixedLengthStream），任何 pipeThrough 包装都会让它报
+    // "Provided readable stream must have a known length" —— 上传全挂。
     let resultSize = 0;
     try {
-      const res = await st.put(key, body, {
+      const res = await st.put(key, req.body, {
         contentType: mime,
         contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
         contentLength: declared ?? undefined,
@@ -488,21 +488,16 @@ export async function handleAdminApi(
       resultSize = res.size;
     } catch (err: any) {
       await st.delete(key).catch(() => {});
-      if (isOverLimitError(err)) {
-        return json(
-          { error: "too_large", limit_mb: formatMb(settings.maxUploadBytes), message: uploadRejectMsg(req, { code: "too_large", limitBytes: settings.maxUploadBytes }) },
-          413
-        );
-      }
       return json({ error: msg(req, "存储写入失败", "Storage write failed"), detail: String(err?.message || err) }, 500);
     }
-    const overQuota = postUploadRejection(settings, usedBytes, resultSize);
-    if (overQuota) {
-      // 配额按真实写入量判定：对象删掉、行不落库，等于什么都没发生
+    // 上限与配额都按落盘后的真实体积判定（声明的 Content-Length 可以撒谎，size 不能）
+    const rejectedAfter = postUploadRejection(settings, usedBytes, resultSize);
+    if (rejectedAfter) {
+      // 对象删掉、行不落库，等于什么都没发生
       await st.delete(key).catch(() => {});
       return json(
-        { error: overQuota.code, limit_mb: formatMb(overQuota.limitBytes), message: uploadRejectMsg(req, overQuota) },
-        overQuota.status
+        { error: rejectedAfter.code, limit_mb: formatMb(rejectedAfter.limitBytes), message: uploadRejectMsg(req, rejectedAfter) },
+        rejectedAfter.status
       );
     }
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──

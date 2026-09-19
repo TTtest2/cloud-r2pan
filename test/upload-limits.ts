@@ -7,10 +7,8 @@
  *   node .dev/upload-limits.mjs
  */
 import {
-  cappedStream,
   declaredSize,
   formatMb,
-  isOverLimitError,
   postUploadRejection,
   preUploadRejection,
 } from "../src/limits";
@@ -32,27 +30,6 @@ const MB = 1024 ** 2;
 
 function settingsWith(patch: Partial<Settings>): Settings {
   return { ...({} as Settings), maxUploadBytes: 100 * MB, storageQuotaBytes: 0, ...patch } as Settings;
-}
-
-function streamOf(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
-  let i = 0;
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (i < chunks.length) controller.enqueue(chunks[i++]);
-      else controller.close();
-    },
-  });
-}
-
-async function drain(stream: ReadableStream<Uint8Array>): Promise<number> {
-  const reader = stream.getReader();
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-  }
-  return total;
 }
 
 /* ═══════════ 走通管理端上传所需的最小环境 ═══════════ */
@@ -101,25 +78,41 @@ class UploadDb {
   }
 }
 
-function makeR2(log: { put: string[]; deleted: string[] }, maxBytes: number) {
-  return {
-    async put(key: string, body: any) {
-      const bytes = await new Response(body).arrayBuffer();
-      if (bytes.byteLength > maxBytes) throw new Error("stream aborted");
-      log.put.push(key);
-      return { size: bytes.byteLength, httpEtag: "etag" };
-    },
-    async delete(key: string) {
-      log.deleted.push(key);
-    },
-    async get() {
-      return null;
-    },
-    async head() {
-      return null;
-    },
-  };
-}
+/**
+ * 假 R2：按线上契约只接受"长度已知"的载体 —— 字节数组，或者 req.body 本尊。
+ * 被 pipeThrough 包出来的匿名流会抛出与 R2 完全相同的错误，
+ * 这样任何"给请求体套一层流处理"的改动都会在这里被测试抓住。
+ *
+ * storage.ts 按设置指纹缓存 provider，全进程只会用到第一个 r2 对象，
+ * 所以这里用模块级共享实例 + 可切换的 expectedBody。
+ */
+const putLog: string[] = [];
+const deleteLog: string[] = [];
+let expectedBody: unknown = null;
+
+const KNOWN_LENGTH_ERROR =
+  "Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)";
+
+const r2Fake: any = {
+  async put(key: string, body: any) {
+    let bytes: Uint8Array;
+    if (body instanceof Uint8Array) bytes = body;
+    else if (body instanceof ArrayBuffer) bytes = new Uint8Array(body);
+    else if (body === expectedBody) bytes = new Uint8Array(await new Response(body).arrayBuffer());
+    else throw new Error(KNOWN_LENGTH_ERROR);
+    putLog.push(key);
+    return { size: bytes.byteLength, httpEtag: "etag" };
+  },
+  async delete(key: string) {
+    deleteLog.push(key);
+  },
+  async get() {
+    return null;
+  },
+  async head() {
+    return null;
+  },
+};
 
 async function upload(body: Uint8Array, opts: { contentLength?: string; maxMb: number; quotaMb?: number }) {
   invalidateSettingsCache();
@@ -129,12 +122,7 @@ async function upload(body: Uint8Array, opts: { contentLength?: string; maxMb: n
     { key: "storage_quota_mb", value: String(opts.quotaMb ?? 0) },
   ];
   const db = new UploadDb(rows);
-  const log = { put: [] as string[], deleted: [] as string[] };
-  const env: any = {
-    db,
-    admin: "sekret",
-    r2: makeR2(log, opts.maxMb * MB),
-  };
+  const env: any = { db, admin: "sekret", r2: r2Fake };
   const cookie = (await createSession(env)).split(";")[0];
   const headers: Record<string, string> = {
     cookie,
@@ -144,8 +132,17 @@ async function upload(body: Uint8Array, opts: { contentLength?: string; maxMb: n
   };
   if (opts.contentLength !== undefined) headers["content-length"] = opts.contentLength;
   const req = new Request("https://pan.test/api/admin/upload", { method: "POST", headers, body: body as any });
+  expectedBody = req.body; // 处理函数必须把 req.body 原样交给存储层
+  const putsBefore = putLog.length;
+  const delsBefore = deleteLog.length;
   const res = await handleAdminApi(req, env, { waitUntil() {}, props: {} } as any, "/api/admin/upload");
-  return { status: res.status, body: await res.json().catch(() => null), db, log };
+  return {
+    status: res.status,
+    body: await res.json().catch(() => null),
+    db,
+    puts: putLog.length - putsBefore,
+    deletes: deleteLog.length - delsBefore,
+  };
 }
 
 async function main() {
@@ -167,19 +164,26 @@ async function main() {
     check("MB 取整显示", formatMb(1.5 * MB) === 1.5 && formatMb(100 * MB) === 100);
   }
 
-  console.log("\n[2] 流式计数：撒谎的 Content-Length 挡不住它");
+  console.log("\n[2] 存储契约守卫：R2 只收长度已知的流");
   {
-    const chunks = [new Uint8Array(1000), new Uint8Array(1000), new Uint8Array(1000)];
-    const capped = cappedStream(streamOf(chunks), 2500);
-    let thrown = "";
+    const src = new Response("hello").body;
+    expectedBody = src;
+    check("请求体本尊被接受", (await r2Fake.put("k1", src)).size === 5);
+    expectedBody = null;
+    let msg = "";
     try {
-      await drain(capped);
+      await r2Fake.put("k2", new Response("x").body);
     } catch (e: any) {
-      thrown = String(e?.message ?? e);
+      msg = String(e?.message);
     }
-    check("超限抛错", isOverLimitError(new Error(thrown)), thrown);
-    check("没超限时原样通过", (await drain(cappedStream(streamOf([new Uint8Array(1000)]), 2500))) === 1000);
-    check("普通错误不误判", isOverLimitError(new Error("network down")) === false);
+    check("不是请求体的流一律拒绝（与线上同错误）", msg.includes("known length"), msg);
+    msg = "";
+    try {
+      await r2Fake.put("k3", new Response("y").body!.pipeThrough(new TransformStream())); // 曾经的回归：套一层计数流
+    } catch (e: any) {
+      msg = String(e?.message);
+    }
+    check("被管道包过的流同样被拒", msg.includes("known length"), msg);
   }
 
   console.log("\n[3] 设置解析：MB → 字节");
@@ -207,19 +211,19 @@ async function main() {
     const honest = await upload(big, { maxMb: 1, contentLength: String(2 * MB) });
     check("诚实声明超限 → 413", honest.status === 413, String(honest.status));
     check("错误码与上限回传", (honest.body as any)?.error === "too_large" && (honest.body as any).limit_mb === 1, JSON.stringify(honest.body));
-    check("未落库", honest.db.inserted.length === 0);
-    check("落盘前就挡下：没写对象也没得回滚", honest.log.put.length === 0 && honest.log.deleted.length === 0, JSON.stringify(honest.log));
+    check("预检就挡下：零写入、不落库", honest.puts === 0 && honest.deletes === 0 && honest.db.inserted.length === 0,
+      JSON.stringify({ puts: honest.puts, dels: honest.deletes, rows: honest.db.inserted.length }));
 
-    // 谎报 Content-Length：躲得过预检，躲不过流式计数
+    // 把 Content-Length 说小：躲得过预检，也躲不过落盘后的真实体积复核
     const liar = await upload(big, { maxMb: 1, contentLength: "5" });
-    check("谎报 Content-Length 仍被拦下", liar.status === 413, String(liar.status) + JSON.stringify(liar.body));
-    check("谎报时也没落库", liar.db.inserted.length === 0, JSON.stringify(liar.db.inserted));
-    // 所有调用共用同一个 storage provider（按设置指纹缓存），所以看第一个 log
-    check("写到一半的对象被回滚删除", honest.log.deleted.length >= 1 && honest.log.put.length === 0, JSON.stringify(honest.log));
+    check("真实体积超限仍是 413", liar.status === 413, String(liar.status) + JSON.stringify(liar.body));
+    check("既不落库也回滚了对象", liar.db.inserted.length === 0 && (liar.puts === 0 || (liar.puts === 1 && liar.deletes === 1)),
+      JSON.stringify({ puts: liar.puts, dels: liar.deletes }));
 
     const fits = await upload(new Uint8Array(600 * 1024), { maxMb: 1, contentLength: String(600 * 1024) });
     check("合法上传照常成功", fits.status === 201, String(fits.status) + JSON.stringify(fits.body));
-    check("成功时写入一行", fits.db.inserted.length === 1);
+    check("成功时写一个对象落一行", fits.db.inserted.length === 1 && fits.puts === 1 && fits.deletes === 0,
+      JSON.stringify({ puts: fits.puts, dels: fits.deletes }));
 
     const quota = await upload(new Uint8Array(600 * 1024), { maxMb: 1, quotaMb: 0, contentLength: String(600 * 1024) });
     check("配额 0 表示不限", quota.status === 201, String(quota.status));

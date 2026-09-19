@@ -71,9 +71,11 @@ can never burn a share's download allowance.
   the console fetches one at a time on demand.
 - WebDAV credentials are PBKDF2-SHA256 (50k iterations; workerd caps PBKDF2 at 100k), with 8 failed
   attempts per minute per IP before the expensive derivation is skipped entirely.
-- Upload sizes are enforced server-side (`max_upload_mb`, capped at the Workers 100 MB request
-  limit; a byte-counting stream catches a lying `Content-Length`) plus an optional total quota
-  that rolls the object back when exceeded.
+- `max_upload_mb` (default 100; raising it is pointless — the Workers request body caps there):
+  the declared `Content-Length` is checked first, then the real size reported by the storage
+  layer is re-checked after the write and the object is deleted if it was over. `req.body` must be
+  handed to storage untouched — R2 only accepts streams of known length (the request body itself
+  or a `FixedLengthStream`), so a `pipeThrough` counting wrapper would be rejected outright.
 - OAuth `?redirect=` accepts in-site paths only; all HTML output is escaped and served with CSP,
   `X-Frame-Options` and `Referrer-Policy`.
 - Admin errors return a short `ref`; the stack trace stays in the Worker log.

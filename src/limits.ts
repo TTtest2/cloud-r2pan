@@ -1,19 +1,20 @@
 /**
  * 上传体积闸门 —— 单文件上限与总存储配额
  *
- * 前端一直写着"单文件最大 100 MB"，但那句话只存在于文案里：服务端从来没校验过，
- * 换一个不自量力的客户端（或干脆不带 Content-Length 的分块请求）就能无视它。
- * 这里补齐两道判据：
- *   1. 落盘前用声明体积挡掉明显的（快、省流量）
- *   2. 流式计数挡掉伪造声明的 —— 声明可以撒谎，实际字节数不行
- *   3. 配额用真实写入量事后判定，超了就回滚（删对象、不落库）
+ * 前端那句"单文件最大 100 MB"以前只存在于文案里，服务端从来没校验过。
+ * 现在两层判定：
+ *   1. 落盘前用声明的 Content-Length 挡掉明显的超标请求（省一次写入）
+ *   2. 写入完成后用存储层回报的真实 size 复核上限与配额，超标就把对象删掉、
+ *      行不落库 —— 声明可以撒谎，真实字节数不能
+ *
+ * ⚠️ 不要用 pipeThrough 给 req.body 套一层字节计数：R2 只接受"长度已知"的流
+ * （请求体本身或 FixedLengthStream），管道出来的是匿名流，会被直接拒绝并报
+ * "Provided readable stream must have a known length"，于是所有上传全挂。
+ * 传进存储层的必须是 req.body 本尊。
  */
 
 import type { Env } from "./types";
 import type { Settings } from "./settings";
-
-/** cappedStream 超限抛出的错误标记，调用方靠它区分"体积超限"与"存储故障" */
-export const OVER_LIMIT_MESSAGE = "upload_over_limit";
 
 export interface UploadRejection {
   status: number;
@@ -37,7 +38,7 @@ export async function usedStorageBytes(env: Env): Promise<number> {
   return row?.bytes ?? 0;
 }
 
-/** 落盘之前能判多少判多少（declared 为 null 时装不下就知道装不下，交给流计数） */
+/** 落盘之前能判多少判多少（没声明体积时就放行，交给落盘后的真实 size 复核） */
 export function preUploadRejection(settings: Settings, usedBytes: number, declared: number | null): UploadRejection | null {
   if (settings.maxUploadBytes > 0 && declared !== null && declared > settings.maxUploadBytes) {
     return { status: 413, code: "too_large", limitBytes: settings.maxUploadBytes };
@@ -48,34 +49,19 @@ export function preUploadRejection(settings: Settings, usedBytes: number, declar
   return null;
 }
 
-/** 写入完成后用真实体积再判一次配额（声明缺失或撒谎时这是唯一准确的判据） */
-export function postUploadRejection(settings: Settings, usedBytes: number, actualBytes: number): UploadRejection | null {
+/** 写入完成后用真实体积判上限与配额 —— 声明可以撒谎，落盘后的 size 不会 */
+export function postUploadRejection(
+  settings: Settings,
+  usedBytes: number,
+  actualBytes: number
+): UploadRejection | null {
+  if (settings.maxUploadBytes > 0 && actualBytes > settings.maxUploadBytes) {
+    return { status: 413, code: "too_large", limitBytes: settings.maxUploadBytes };
+  }
   if (settings.storageQuotaBytes > 0 && usedBytes + actualBytes > settings.storageQuotaBytes) {
     return { status: 507, code: "quota_exceeded", limitBytes: settings.storageQuotaBytes };
   }
   return null;
-}
-
-/**
- * 给请求体包一层字节计数，超过 maxBytes 就抛 OVER_LIMIT_MESSAGE。
- * 流被下游（R2 / S3）拉走时才会触发，所以不需要先把整个文件读进内存。
- */
-export function cappedStream(source: ReadableStream<Uint8Array>, maxBytes: number): ReadableStream<Uint8Array> {
-  let seen = 0;
-  return source.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        seen += chunk.byteLength;
-        if (seen > maxBytes) throw new Error(OVER_LIMIT_MESSAGE);
-        controller.enqueue(chunk);
-      },
-    })
-  );
-}
-
-/** 是"体积超限"导致的失败吗 */
-export function isOverLimitError(err: unknown): boolean {
-  return String((err as any)?.message ?? err).includes(OVER_LIMIT_MESSAGE);
 }
 
 export function formatMb(bytes: number): number {

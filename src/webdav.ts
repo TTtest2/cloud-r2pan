@@ -25,10 +25,8 @@ import { getSettings, updateSettings } from "./settings";
 import { sha256Hex, hashWebDAVPassword, verifyWebDAVPassword } from "./crypto";
 import { clientIp, authThrottled, noteAuthFailure, clearAuthFailures } from "./auth";
 import {
-  cappedStream,
   declaredSize,
   formatMb,
-  isOverLimitError,
   postUploadRejection,
   preUploadRejection,
   usedStorageBytes,
@@ -539,9 +537,9 @@ async function handleWebDavPut(
   const now = Date.now();
 
   let size = 0;
-  const body = limits.maxUploadBytes > 0 ? cappedStream(req.body as ReadableStream<Uint8Array>, limits.maxUploadBytes) : (req.body as ReadableStream<Uint8Array>);
+  // req.body 必须原样交给存储层：R2 只接受长度已知的流，pipeThrough 包装会被直接拒绝
   try {
-    const res = await st.put(key, body as any, {
+    const res = await st.put(key, req.body as any, {
       contentType: mime,
       contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
       contentLength: declared ?? undefined,
@@ -549,16 +547,15 @@ async function handleWebDavPut(
     size = res.size;
   } catch (err: any) {
     await st.delete(key).catch(() => {});
-    if (isOverLimitError(err)) {
-      return new Response(`Payload Too Large: per-file limit is ${formatMb(limits.maxUploadBytes)} MB`, { status: 413 });
-    }
     return new Response(`Storage error: ${err?.message || err}`, { status: 502 });
   }
 
-  const overQuota = postUploadRejection(limits, usedBytes, size);
-  if (overQuota) {
+  const over = postUploadRejection(limits, usedBytes, size);
+  if (over) {
     await st.delete(key).catch(() => {});
-    return new Response(`Insufficient Storage: quota is ${formatMb(overQuota.limitBytes)} MB`, { status: 507 });
+    return new Response(over.code === "too_large"
+      ? `Payload Too Large: per-file limit is ${formatMb(over.limitBytes)} MB`
+      : `Insufficient Storage: quota is ${formatMb(over.limitBytes)} MB`, { status: over.status });
   }
 
   // 覆盖上传：先换行再删旧对象，中途失败最多留一个孤儿对象
