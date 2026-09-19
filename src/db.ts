@@ -282,6 +282,122 @@ export async function migrateFolderTree(env: Env): Promise<void> {
   ]);
 }
 
+/**
+ * 旧 WebDAV 模型（directories 路径表 + files.path 存完整路径）→ folders 树。
+ *
+ * 幂等：只处理"还没归属"的行（folder_id IS NULL 且 path 不是 '/'），
+ * 搬完后把根下文件的 path 归位成 '/'，于是预检查自然为假、后续冷启动零开销。
+ * 万一回滚过、旧代码又写了新行，下次冷启动会再捡一次。
+ */
+export async function migrateLegacyFolders(env: Env): Promise<{ folders: number; files: number }> {
+  const pendingDirs = await env.db.prepare("SELECT 1 FROM directories LIMIT 1").first();
+  const pendingFiles = await env.db
+    .prepare("SELECT 1 FROM files WHERE folder_id IS NULL AND path IS NOT NULL AND path != '/' LIMIT 1")
+    .first();
+  if (!pendingDirs && !pendingFiles) return { folders: 0, files: 0 };
+
+  const idByPath = new Map<string, string | null>();
+  let folders = 0;
+
+  /** 保证 /a/b/c 这条路径上的每一层都存在，返回最内层 id（根为 null） */
+  async function ensureFolderPath(path: string): Promise<string | null> {
+    if (path === "/" || path === "") return null;
+    if (idByPath.has(path)) return idByPath.get(path)!;
+    const last = path.lastIndexOf("/");
+    const parentPath = last <= 0 ? "/" : path.slice(0, last);
+    const name = path.slice(last + 1);
+    const parentId = await ensureFolderPath(parentPath);
+
+    const existing = await findChild(name, parentId);
+    if (existing) {
+      idByPath.set(path, existing);
+      return existing;
+    }
+    const id = randomId(14);
+    try {
+      await insertFolder(id, name, parentId);
+      folders++;
+    } catch {
+      const raced = await findChild(name, parentId); // 并发迁移：别人刚建好
+      if (!raced) throw new Error("migrateLegacyFolders: 无法建目录 " + path);
+      return raced;
+    }
+    idByPath.set(path, id);
+    return id;
+  }
+
+  function findChild(name: string, parentId: string | null) {
+    const stmt = parentId === null
+      ? env.db.prepare("SELECT id FROM folders WHERE parent_id IS NULL AND name = ?1").bind(name)
+      : env.db.prepare("SELECT id FROM folders WHERE parent_id = ?1 AND name = ?2").bind(parentId, name);
+    return stmt.first<{ id: string }>().then((r) => r?.id ?? null);
+  }
+
+  function insertFolder(id: string, name: string, parentId: string | null) {
+    return env.db
+      .prepare("INSERT INTO folders(id, name, parent_id, created_at) VALUES(?1, ?2, ?3, ?4)")
+      .bind(id, name, parentId, Date.now())
+      .run();
+  }
+
+  // ① 显式目录：按路径长度排序，保证父层先建
+  const { results: dirs } = await env.db
+    .prepare("SELECT path FROM directories ORDER BY length(path)")
+    .all<{ path: string }>();
+  for (const d of dirs ?? []) await ensureFolderPath(d.path);
+
+  // ② 文件归属
+  const { results: files } = await env.db
+    .prepare(
+      "SELECT id, name, path FROM files WHERE folder_id IS NULL AND path IS NOT NULL AND path != '/'"
+    )
+    .all<{ id: string; name: string; path: string }>();
+
+  let moved = 0;
+  for (const f of files ?? []) {
+    const last = f.path.lastIndexOf("/");
+    const parentPath = last <= 0 ? "/" : f.path.slice(0, last);
+    const folderId = await ensureFolderPath(parentPath);
+
+    // 目标目录里已有同名文件：给搬来的换个名字，绝不覆盖别人的文件
+    const clash = await env.db
+      .prepare(
+        folderId === null
+          ? "SELECT 1 FROM files WHERE folder_id IS NULL AND name = ?1 AND id != ?2 LIMIT 1"
+          : "SELECT 1 FROM files WHERE folder_id = ?1 AND name = ?2 AND id != ?3 LIMIT 1"
+      )
+      .bind(...(folderId === null ? [f.name, f.id] : [folderId, f.name, f.id]))
+      .first();
+    const name = clash ? uniqueName(f.name) : f.name;
+
+    if (folderId === null) {
+      // 本来就在根：归属不变，把 path 归位成 '/'，让预检查下次直接为假
+      await env.db.prepare("UPDATE files SET path = '/' WHERE id = ?1").bind(f.id).run();
+    } else {
+      await env.db
+        .prepare("UPDATE files SET folder_id = ?1, name = ?2 WHERE id = ?3")
+        .bind(folderId, name, f.id)
+        .run();
+    }
+    moved++;
+  }
+
+  // ③ directories 表清空 —— 新树是唯一事实；旧代码靠 files.path 仍能推断出目录
+  if (dirs?.length) {
+    for (const d of dirs) await env.db.prepare("DELETE FROM directories WHERE path = ?1").bind(d.path).run();
+  }
+  console.log(`[migrateLegacyFolders] 建目录 ${folders} 个，归位文件 ${moved} 个`);
+  return { folders, files: moved };
+}
+
+/** 撞名时用的兜底名字：在扩展名前插一个短后缀 */
+function uniqueName(name: string): string {
+  const suffix = " (migrated)";
+  const dot = name.lastIndexOf(".");
+  if (dot > 0) return name.slice(0, dot) + suffix + name.slice(dot);
+  return name + suffix;
+}
+
 export async function ensureSchema(env: Env): Promise<void> {
   // ① 防御性检查：如果数据库绑定不存在，直接报错
   if (!env.db) {
@@ -330,6 +446,9 @@ export async function ensureSchema(env: Env): Promise<void> {
 
   // ⑥ 跑增量迁移（幂等，只跑未执行过的）
   await runMigrations(env);
+
+  // ⑦ 旧 WebDAV 目录数据搬进 folders 树（幂等，无活可干时两条 LIMIT 1 就返回）
+  await migrateLegacyFolders(env);
 
   schemaReady = true;
 }
