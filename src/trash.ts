@@ -109,8 +109,10 @@ export async function removeFiles(
   if (!live.length) return { soft: 0, purged: 0, keys: [] };
   const foundIds = live.map((f) => f.id);
   for (const part of chunks(foundIds)) {
+    // 时间戳占 ?1，所以 id 的占位符必须从 ?2 开始编号
+    const ph = part.map((_, i) => `?${i + 2}`).join(", ");
     await env.db
-      .prepare(`UPDATE files SET deleted_at = ?1 WHERE id IN (${placeholders(part)}) AND deleted_at IS NULL`)
+      .prepare(`UPDATE files SET deleted_at = ?1 WHERE id IN (${ph}) AND deleted_at IS NULL`)
       .bind(now, ...part)
       .run();
   }

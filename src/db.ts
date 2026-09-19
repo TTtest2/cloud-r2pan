@@ -13,9 +13,11 @@ import type { Env } from "./types";
  *   traffic_stats      每日流量/下载汇总 (用于图表)
  */
 const SCHEMA_STATEMENTS: string[] = [
+  // ⚠️ key 故意不加 UNIQUE：内容去重后多个 files 行会指向同一个对象，
+  //    "还能不能删这个对象"由引用计数决定（见 src/trash.ts），不靠约束。
   `CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
-    key TEXT NOT NULL UNIQUE,
+    key TEXT NOT NULL,
     name TEXT NOT NULL,
     size INTEGER NOT NULL,
     mime TEXT NOT NULL DEFAULT 'application/octet-stream',
@@ -430,6 +432,59 @@ function uniqueName(name: string): string {
   return name + suffix;
 }
 
+/**
+ * 去掉 files.key 的 UNIQUE 约束 —— 内容去重的前提。
+ *
+ * 原始建表语句是 `key TEXT NOT NULL UNIQUE`，隐含"一行一个对象"。去重之后多个
+ * files 行会指向同一个 key（对象只存一份，能不能删由引用计数决定），重指那一步
+ * 会直接 SQLITE_CONSTRAINT 失败。SQLite 不能 ALTER 掉列上的 UNIQUE，只能重建表。
+ *
+ * 列是从 PRAGMA table_info 现读现拼的，所以这条迁移必须排在增量迁移**之后**
+ * （deleted_at / sha256 / etag 这些列得先存在），且可以反复执行：
+ * 表里没有 UNIQUE 时第一步就返回。
+ */
+export async function migrateFilesKeyShareable(env: Env): Promise<void> {
+  let currentSql = "";
+  try {
+    const row = await env.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .first<{ sql: string | null }>();
+    currentSql = row?.sql ?? "";
+  } catch {
+    return; // 读不到 sqlite_master：交给其它迁移兜底
+  }
+  if (!currentSql) return;                     // 表还不存在 → 建表语句已是新形状
+  if (!/\bUNIQUE\b/i.test(currentSql)) return; // 已经能共享 key
+
+  const { results: cols } = await env.db
+    .prepare("PRAGMA table_info(files)")
+    .all<{ name: string; type: string; notnull: number; dflt_value: string | null; pk: number }>();
+  const list = cols ?? [];
+  if (!list.length) return;
+
+  const defs = list.map((c) => {
+    const parts = [`"${c.name}"`, c.type || "TEXT"];
+    if (c.pk === 1) parts.push("PRIMARY KEY");
+    else if (c.notnull) parts.push("NOT NULL");
+    if (c.dflt_value !== null && c.dflt_value !== undefined) parts.push(`DEFAULT ${c.dflt_value}`);
+    return parts.join(" ");
+  });
+  const names = list.map((c) => `"${c.name}"`).join(", ");
+
+  await env.db.batch([
+    env.db.prepare(`CREATE TABLE files_v2(${defs.join(", ")})`),
+    env.db.prepare(`INSERT INTO files_v2(${names}) SELECT ${names} FROM files`),
+    env.db.prepare("DROP TABLE files"),
+    env.db.prepare("ALTER TABLE files_v2 RENAME TO files"),
+    // 重建表会带走原来的索引，这里把非唯一索引全部补回来
+    env.db.prepare("CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)"),
+    env.db.prepare("CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id)"),
+    env.db.prepare("CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted_at)"),
+    env.db.prepare("CREATE INDEX IF NOT EXISTS idx_files_sha ON files(sha256) WHERE sha256 IS NOT NULL"),
+    env.db.prepare("CREATE INDEX IF NOT EXISTS idx_files_etag ON files(etag) WHERE etag IS NOT NULL"),
+  ]);
+}
+
 export async function ensureSchema(env: Env): Promise<void> {
   // ① 防御性检查：如果数据库绑定不存在，直接报错
   if (!env.db) {
@@ -481,6 +536,9 @@ export async function ensureSchema(env: Env): Promise<void> {
 
   // ⑦ 旧 WebDAV 目录数据搬进 folders 树（幂等，无活可干时两条 LIMIT 1 就返回）
   await migrateLegacyFolders(env);
+
+  // ⑧ 去掉 files.key 的 UNIQUE（必须排在增量迁移之后：新列要先存在）
+  await migrateFilesKeyShareable(env);
 
   schemaReady = true;
 }

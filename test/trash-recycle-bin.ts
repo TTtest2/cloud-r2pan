@@ -84,6 +84,12 @@ class Db {
   }
 
   private run(sql: string, binds: any[], mode: string): any {
+    // 真 D1 会拒绝"占位符编号个数 ≠ 绑定值个数"的语句 —— 软删除那个 bug 正是这样
+    // 躲过了假库（时间戳占了 ?1，id 列表又从 ?1 开始编号）。这里把它变成断言。
+    const numbered = new Set([...sql.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])));
+    if (numbered.size && numbered.size !== binds.length) {
+      throw new Error(`占位符与绑定不匹配（${numbered.size} vs ${binds.length}）: ${sql}`);
+    }
     /* ── ensureSchema 冷启动 ── */
     if (/sqlite_master/.test(sql)) return mode === "all" ? [] : { name: "settings", sql: NEW_TABLE_SQL };
     if (/SELECT value FROM settings WHERE key = 'migration_version'/.test(sql)) return { value: "999" };
