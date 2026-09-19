@@ -11,6 +11,7 @@ import { getStorageProvider as storage } from "./storage";
 import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
 import { applyDisposition, inlineCsp, wantsInline } from "./preview";
 import { escapeLike } from "./market";
+import { deleteObjects, purgeFiles, removeFiles, restoreFiles } from "./trash";
 import {
   declaredSize,
   formatMb,
@@ -284,9 +285,10 @@ export async function handleAdminApi(
   if (path === "/api/admin/stats" && method === "GET") {
     // getSettings 内部已做跨月自动兜底，无需此处重复检查和 DB 写入
     const s = await getSettings(env);
-    const [files, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned] =
+    const [files, trash, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned] =
       await Promise.all([
-        env.db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM files").first<{ c: number; bytes: number }>(),
+        env.db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM files WHERE deleted_at IS NULL").first<{ c: number; bytes: number }>(),
+        env.db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM files WHERE deleted_at IS NOT NULL").first<{ c: number; bytes: number }>(),
         env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>(),
         env.db.prepare(
           "SELECT COUNT(*) AS c FROM shares WHERE revoked = 0 AND (expires_at IS NULL OR expires_at > ?1) AND (max_downloads IS NULL OR download_count < max_downloads)"
@@ -329,6 +331,7 @@ export async function handleAdminApi(
       },
       counts: {
         files: files?.c ?? 0,
+        trash_files: trash?.c ?? 0,
         shares: shares?.c ?? 0,
         active_shares: activeShares?.c ?? 0,
         downloads_total: totalDownloads?.c ?? 0,
@@ -337,9 +340,11 @@ export async function handleAdminApi(
         banned: banned?.c ?? 0,
       },
       storage: {
-        // files.size 记录的是 put 时 R2 返回的真实对象大小，累加即已用存储
-        bytes: Number(files?.bytes ?? 0) || 0,
+        // files.size 记录的是 put 时 R2 返回的真实对象大小，累加即已用存储。
+        // 回收站里的对象还没删，所以它也算占用 —— 只有彻底清除才会腾出空间。
+        bytes: (Number(files?.bytes ?? 0) || 0) + (Number(trash?.bytes ?? 0) || 0),
         files: files?.c ?? 0,
+        trash_bytes: Number(trash?.bytes ?? 0) || 0,
       },
       chart,
       recent: recent.results ?? [],
@@ -350,8 +355,8 @@ export async function handleAdminApi(
   if (path === "/api/admin/folders" && method === "GET") {
     const { results } = await env.db.prepare(
       `SELECT fo.id, fo.name, fo.parent_id, fo.created_at,
-              (SELECT COUNT(*) FROM files fl WHERE fl.folder_id = fo.id) AS file_count,
-              (SELECT COALESCE(SUM(fl.size), 0) FROM files fl WHERE fl.folder_id = fo.id) AS total_size,
+              (SELECT COUNT(*) FROM files fl WHERE fl.folder_id = fo.id AND fl.deleted_at IS NULL) AS file_count,
+              (SELECT COALESCE(SUM(fl.size), 0) FROM files fl WHERE fl.folder_id = fo.id AND fl.deleted_at IS NULL) AS total_size,
               (SELECT COUNT(*) FROM folders ch WHERE ch.parent_id = fo.id) AS subfolder_count
        FROM folders fo`
     ).all<{ id: string; name: string; parent_id: string | null; created_at: number; file_count: number; total_size: number; subfolder_count: number }>();
@@ -391,7 +396,7 @@ export async function handleAdminApi(
     const folder = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(folderId).first();
     if (!folder) return json({ error: msg(req, "文件夹不存在", "Folder not found") }, 404);
     const busy = await env.db.prepare(
-      `SELECT (SELECT COUNT(*) FROM files WHERE folder_id = ?1) AS files,
+      `SELECT (SELECT COUNT(*) FROM files WHERE folder_id = ?1 AND deleted_at IS NULL) AS files,
               (SELECT COUNT(*) FROM folders WHERE parent_id = ?1) AS subfolders`
     ).bind(folderId).first<{ files: number; subfolders: number }>();
     if ((busy?.files ?? 0) > 0 || (busy?.subfolders ?? 0) > 0) {
@@ -410,15 +415,19 @@ export async function handleAdminApi(
   if (path === "/api/admin/files" && method === "GET") {
     const sp = new URL(req.url).searchParams;
     const folder = sp.get("folder"); // null=全部 | "root"=根目录 | 其他=文件夹 id
+    const trashed = sp.get("trash") === "1"; // 1 = 回收站视图
     const q = sp.get("q")?.trim() ?? "";
     const page = Math.max(1, Number(sp.get("page")) || 1);
     const size = Math.min(200, Math.max(10, Number(sp.get("size")) || 50));
     const sortKey = sp.get("sort");
     const sortCol =
-      sortKey === "name" ? "f.name COLLATE NOCASE" : sortKey === "size" ? "f.size" : "f.uploaded_at";
+      sortKey === "name" ? "f.name COLLATE NOCASE"
+      : sortKey === "size" ? "f.size"
+      : sortKey === "deleted_at" ? "f.deleted_at"
+      : "f.uploaded_at";
     const sortDir = sp.get("dir") === "asc" ? "ASC" : "DESC";
 
-    const frags: string[] = [];
+    const frags: string[] = [trashed ? "f.deleted_at IS NOT NULL" : "f.deleted_at IS NULL"];
     const binds: (string | number)[] = [];
     if (folder === "root") frags.push("f.folder_id IS NULL");
     else if (folder) {
@@ -437,13 +446,13 @@ export async function handleAdminApi(
       env.db.prepare(`SELECT COUNT(*) AS c FROM files f ${where}`).bind(...binds).first<{ c: number }>(),
       env.db
         .prepare(
-          `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.folder_id,
+          `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.folder_id, f.deleted_at,
                   COALESCE(sc.n, 0) AS share_count, COALESCE(sc.d, 0) AS download_count
            FROM files f LEFT JOIN ${shareAgg} sc ON sc.file_id = f.id
            ${where} ORDER BY ${sortCol} ${sortDir}, f.id DESC LIMIT ? OFFSET ?`
         )
         .bind(...binds, size, (page - 1) * size)
-        .all<{ id: string; name: string; size: number; mime: string; uploaded_at: number; folder_id: string | null; share_count: number; download_count: number }>(),
+        .all<{ id: string; name: string; size: number; mime: string; uploaded_at: number; folder_id: string | null; deleted_at: number | null; share_count: number; download_count: number }>(),
     ]);
     return json({ files: pageRows?.results ?? [], total: countRow?.c ?? 0, page, size });
   }
@@ -452,7 +461,7 @@ export async function handleAdminApi(
   const fileDlMatch = /^\/api\/admin\/files\/([^/]+)\/download$/.exec(path);
   if (fileDlMatch && method === "GET") {
     const file = await env.db
-      .prepare("SELECT name, key FROM files WHERE id = ?1")
+      .prepare("SELECT name, key FROM files WHERE id = ?1 AND deleted_at IS NULL")
       .bind(fileDlMatch[1])
       .first<{ name: string; key: string }>();
     if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
@@ -550,40 +559,26 @@ export async function handleAdminApi(
     return json({ ok: true, id, name, size: resultSize }, 201);
   }
 
-  // ── 批量删除文件（连带分享、直链、日志与存储对象） ──
+  // ── 批量删除文件（默认进回收站；mode=purge 彻底删除） ──
   if (path === "/api/admin/files/batch-delete" && method === "POST") {
-    const body = await readJson<{ ids?: string[] }>(req);
+    const body = await readJson<{ ids?: string[]; mode?: string }>(req);
     const ids = normalizeIds(body.ids);
     if (!ids.length) return json({ error: msg(req, "请先选择文件", "No files selected") }, 400);
-    const idPh = ids.map((_, i) => `?${i + 1}`).join(", ");
-    const rows = await env.db
-      .prepare(`SELECT id, key FROM files WHERE id IN (${idPh})`)
-      .bind(...ids)
-      .all<{ id: string; key: string }>();
-    const found = rows.results ?? [];
-    if (!found.length) return json({ error: msg(req, "文件不存在或已被删除", "Files not found") }, 404);
-    const foundIds = found.map((f) => f.id);
-    const ph = foundIds.map((_, i) => `?${i + 1}`).join(", ");
-    await env.db.batch([
-      env.db.prepare(`DELETE FROM shares WHERE file_id IN (${ph})`).bind(...foundIds),
-      env.db.prepare(`DELETE FROM direct_links WHERE file_id IN (${ph})`).bind(...foundIds),
-      env.db.prepare(`DELETE FROM download_logs WHERE file_id IN (${ph})`).bind(...foundIds),
-      env.db.prepare(`DELETE FROM files WHERE id IN (${ph})`).bind(...foundIds),
-    ]);
-    // 存储对象删除较慢，放到 waitUntil 里串行清理，不阻塞响应
-    ctx.waitUntil(
-      (async () => {
-        const st = await storage(env);
-        for (const key of found.map((f) => f.key)) {
-          try {
-            await st.delete(key);
-          } catch {
-            // 存储删除失败不影响 DB 结果，静默跳过
-          }
-        }
-      })()
-    );
-    return json({ ok: true, deleted: foundIds.length, skipped: ids.length - foundIds.length });
+    const s = await getSettings(env);
+    const r =
+      body.mode === "purge"
+        ? await purgeFiles(env, ids)
+        : await removeFiles(env, ids, s.trashRetentionDays);
+    const gone = r.soft + r.purged;
+    if (!gone) return json({ error: msg(req, "文件不存在或已被删除", "Files not found") }, 404);
+    ctx.waitUntil(deleteObjects(env, r.keys));
+    return json({
+      ok: true,
+      deleted: gone,
+      trashed: r.soft,
+      purged: r.purged,
+      skipped: ids.length - gone,
+    });
   }
 
   // ── 批量移动文件到文件夹（folder_id 为空 = 移回根目录） ──
@@ -600,27 +595,57 @@ export async function handleAdminApi(
     }
     const ph = ids.map((_, i) => `?${i + 2}`).join(", ");
     const r = await env.db
-      .prepare(`UPDATE files SET folder_id = ?1 WHERE id IN (${ph})`)
+      .prepare(`UPDATE files SET folder_id = ?1 WHERE id IN (${ph}) AND deleted_at IS NULL`)
       .bind(folderId, ...ids)
       .run();
     return json({ ok: true, moved: r.meta.changes ?? 0, folder_id: folderId });
   }
 
-  // ── 删除文件（连带存储对象、分享、日志） ──────────
+  // ── 删除文件：默认进回收站，?purge=1 立即彻底删除 ──────────
   const fileMatch = /^\/api\/admin\/files\/([^/]+)$/.exec(path);
   if (fileMatch && method === "DELETE") {
-    const fileId = fileMatch[1];
-    const file = await env.db.prepare("SELECT key FROM files WHERE id = ?1").bind(fileId).first<{ key: string }>();
-    if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
-    await env.db.batch([
-      env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM direct_links WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
-    ]);
-    const st = await storage(env);
-    ctx.waitUntil(st.delete(file.key).catch(() => {}));
-    return json({ ok: true });
+    const fileId = decodeURIComponent(fileMatch[1]);
+    const s = await getSettings(env);
+    const purge = url.searchParams.get("purge") === "1";
+    const r = purge
+      ? await purgeFiles(env, [fileId])
+      : await removeFiles(env, [fileId], s.trashRetentionDays);
+    if (!r.soft && !r.purged) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
+    ctx.waitUntil(deleteObjects(env, r.keys));
+    return json({ ok: true, trashed: r.soft > 0 });
+  }
+
+  // ── 回收站：恢复 / 彻底删除 / 清空 ─────────────────────
+  if (path === "/api/admin/files/batch-restore" && method === "POST") {
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = normalizeIds(body.ids);
+    if (!ids.length) return json({ error: msg(req, "请先选择文件", "No files selected") }, 400);
+    const r = await restoreFiles(env, ids);
+    if (!r.restored) return json({ error: msg(req, "文件不在回收站里", "Nothing to restore") }, 404);
+    invalidateFolderTree();
+    return json({ ok: true, restored: r.restored, moved_to_root: r.toRoot });
+  }
+
+  if (path === "/api/admin/trash/cleanup" && method === "POST") {
+    const body = await readJson<{ all?: boolean; ids?: string[] }>(req);
+    const s = await getSettings(env);
+    let ids = normalizeIds(body.ids);
+    if (!ids.length) {
+      // 未指定 id：清到期条目（all=1 时不看保留期，整站倒空）
+      const { results } = await env.db
+        .prepare(
+          body.all
+            ? `SELECT id FROM files WHERE deleted_at IS NOT NULL ORDER BY deleted_at LIMIT 200`
+            : `SELECT id FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?1 ORDER BY deleted_at LIMIT 200`
+        )
+        .bind(...(body.all ? [] : [Date.now() - s.trashRetentionDays * 86_400_000]))
+        .all<{ id: string }>();
+      ids = (results ?? []).map((r) => r.id);
+    }
+    if (!ids.length) return json({ ok: true, purged: 0 });
+    const r = await purgeFiles(env, ids);
+    ctx.waitUntil(deleteObjects(env, r.keys));
+    return json({ ok: true, purged: r.purged });
   }
 
   // ── 创建分享 ──────────────────────────────────────
@@ -637,7 +662,7 @@ export async function handleAdminApi(
     }>(req);
     if (!body.file_id) return json({ error: msg(req, "缺少 file_id", "Missing file_id") }, 400);
     const fileId = body.file_id;
-    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1").bind(fileId).first();
+    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1 AND deleted_at IS NULL").bind(fileId).first();
     if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
     const expiresAt =
       body.expires_hours && body.expires_hours > 0 ? Date.now() + body.expires_hours * 3600_000 : null;
@@ -759,10 +784,11 @@ export async function handleAdminApi(
     ).run();
 
     // 2. 查出孤儿 files：没有任何 share 引用的文件（LEFT JOIN 反查）
+    //    ⚠️ 必须排除回收站条目 —— 它们的分享行是故意保留的，删除时机由保留期说了算
     const orphans = await env.db.prepare(
       `SELECT f.id, f.key FROM files f
        LEFT JOIN shares s ON s.file_id = f.id
-       WHERE s.id IS NULL`
+       WHERE s.id IS NULL AND f.deleted_at IS NULL`
     ).all<{ id: string; key: string }>();
 
     const orphanIds = (orphans.results ?? []).map((o) => o.id);
@@ -1128,7 +1154,7 @@ export async function handleAdminApi(
       notes?: string | null;
     }>(req);
     if (!body.file_id) return json({ error: msg(req, "缺少 file_id", "Missing file_id") }, 400);
-    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1").bind(body.file_id).first();
+    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1 AND deleted_at IS NULL").bind(body.file_id).first();
     if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
     const expiresAt =
       body.expires_hours && body.expires_hours > 0 ? Date.now() + body.expires_hours * 3600_000 : null;
@@ -1287,6 +1313,7 @@ export async function handleAdminApi(
       site_title: s.siteTitle,
       max_upload_mb: s.maxUploadBytes / 1024 ** 2,
       storage_quota_mb: s.storageQuotaBytes / 1024 ** 2,
+      trash_retention_days: s.trashRetentionDays,
       traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
       max_downloads_per_ip: s.maxDownloadsPerIp,
       count_window_hours: s.countWindowHours,
@@ -1351,6 +1378,9 @@ export async function handleAdminApi(
     if (uploadMb !== null) patch.max_upload_mb = String(Math.min(100, Math.floor(uploadMb)));
     const quotaMb = num(body.storage_quota_mb); // 0 = 不限
     if (quotaMb !== null) patch.storage_quota_mb = String(Math.floor(quotaMb));
+    // 回收站保留期：0 = 关闭（删除即物理删除）；上限 90 天，因为软删除仍占存储
+    const keepDays = num(body.trash_retention_days);
+    if (keepDays !== null) patch.trash_retention_days = String(Math.min(90, Math.max(0, Math.floor(keepDays))));
     const perIp = num(body.max_downloads_per_ip);
     if (perIp !== null) patch.max_downloads_per_ip = String(Math.floor(perIp));
     const window = num(body.count_window_hours);

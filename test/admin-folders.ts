@@ -23,7 +23,7 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 interface FRow { id: string; name: string; parent_id: string | null; created_at: number }
-interface FileRow { id: string; folder_id: string | null; size: number }
+interface FileRow { id: string; folder_id: string | null; size: number; deleted_at?: number | null }
 
 const NEW_TABLE_SQL =
   "CREATE TABLE \"folders\"(id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at INTEGER NOT NULL)";
@@ -91,23 +91,25 @@ class FakeDb {
     }
     if (/^SELECT fo\.id, fo\.name, fo\.parent_id/.test(sql)) {
       if (mode !== "all") return null;
+      const live = (folderId: string | null) =>
+        this.files.filter((x) => x.folder_id === folderId && !x.deleted_at);
       return this.folders.map((f) => ({
         id: f.id,
         name: f.name,
         parent_id: f.parent_id,
         created_at: f.created_at,
-        file_count: this.files.filter((x) => x.folder_id === f.id).length,
-        total_size: this.files.filter((x) => x.folder_id === f.id).reduce((a, b) => a + b.size, 0),
+        file_count: live(f.id).length,
+        total_size: live(f.id).reduce((a, b) => a + b.size, 0),
         subfolder_count: this.folders.filter((x) => x.parent_id === f.id).length,
       }));
     }
     if (/^SELECT id FROM folders WHERE id = \?1/.test(sql)) {
       return this.folders.find((f) => f.id === binds[0]) ?? null;
     }
-    if (/^SELECT \(SELECT COUNT\(\*\) FROM files WHERE folder_id = \?1\) AS files/.test(sql)) {
+    if (/^SELECT \(SELECT COUNT\(\*\) FROM files WHERE folder_id = \?1 AND deleted_at IS NULL\) AS files/.test(sql)) {
       if (mode !== "first") return null;
       return {
-        files: this.files.filter((x) => x.folder_id === binds[0]).length,
+        files: this.files.filter((x) => x.folder_id === binds[0] && !x.deleted_at).length,
         subfolders: this.folders.filter((x) => x.parent_id === binds[0]).length,
       };
     }

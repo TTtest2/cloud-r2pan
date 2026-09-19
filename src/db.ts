@@ -210,6 +210,9 @@ const MIGRATION_STATEMENTS: string[] = [
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_root_name ON folders(name) WHERE parent_id IS NULL",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_child_name ON folders(parent_id, name) WHERE parent_id IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)",
+  // ═══════════ 回收站：软删除（deleted_at 非空 = 在回收站里，对象仍占存储） ═══════════
+  "ALTER TABLE files ADD COLUMN deleted_at INTEGER",
+  "CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted_at)",
 ];
 
 /**

@@ -126,7 +126,7 @@ async function main() {
     check("% 与 _ 被转义后绑定", r.pageBinds[0] === "%\\%a\\_b%", JSON.stringify(r.pageBinds));
     check("计数查询用同一份绑定", r.countBinds.join(",") === r.pageBinds.slice(0, 1).join(","), JSON.stringify(r.countBinds));
     const bare = await call(new FakeDb(), "/api/admin/files?q=");
-    check("空搜索不拼 WHERE 也不绑参", !/WHERE/.test(bare.pageSql) && bare.pageBinds.length === 2, JSON.stringify(bare.pageBinds));
+    check("空搜索不加 LIKE、不多绑参", !/LIKE/.test(bare.pageSql) && bare.pageBinds.length === 2, JSON.stringify(bare.pageBinds));
   }
 
   console.log("\n[4] sort 走白名单，注入进不了 SQL");
@@ -146,11 +146,12 @@ async function main() {
     const db = new FakeDb();
     const inFolder = await call(db, "/api/admin/files?folder=F7&page=3&size=100");
     check("限定目录时先绑目录再绑分页", inFolder.pageBinds.join(",") === "F7,100,200", JSON.stringify(inFolder.pageBinds));
-    check("目录条件写进 WHERE", /WHERE f\.folder_id = \?/.test(inFolder.pageSql), inFolder.pageSql);
+    check("目录条件 AND 在活动过滤之后", /WHERE f\.deleted_at IS NULL AND f\.folder_id = \?/.test(inFolder.pageSql), inFolder.pageSql);
     check("size 上限 200", (await call(new FakeDb(), "/api/admin/files?size=99999")).body?.size === 200);
     check("page 下限 1", (await call(new FakeDb(), "/api/admin/files?page=-5")).body?.page === 1);
     const root = await call(new FakeDb(), "/api/admin/files?folder=root");
-    check("root 只查根目录且不绑定", /WHERE f\.folder_id IS NULL/.test(root.pageSql) && root.pageBinds.length === 2, JSON.stringify(root.pageBinds));
+    check("root 只查根目录且不绑定", /AND f\.folder_id IS NULL/.test(root.pageSql) && root.pageBinds.length === 2, JSON.stringify(root.pageBinds));
+    check("默认列表排除回收站", /f\.deleted_at IS NULL/.test(root.pageSql), root.pageSql);
   }
 
   console.log(`\n${failures === 0 ? "\x1b[32m全部通过\x1b[0m" : `\x1b[31m${failures} 项失败\x1b[0m`}\n`);

@@ -31,6 +31,7 @@ import {
   preUploadRejection,
   usedStorageBytes,
 } from "./limits";
+import { removeFiles } from "./trash";
 import { getStorageProvider as storage } from "./storage";
 import { randomId } from "./db";
 import {
@@ -180,8 +181,8 @@ function splitPath(path: string): { parentPath: string; name: string } {
 /** 同一目录下的同名文件（partial unique index 管目录，文件靠这个查询判重） */
 async function findFileByName(env: Env, parentId: FolderRef, name: string): Promise<DBFile | null> {
   const stmt = parentId === null
-    ? env.db.prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE folder_id IS NULL AND name = ?1`).bind(name)
-    : env.db.prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE folder_id = ?1 AND name = ?2`).bind(parentId, name);
+    ? env.db.prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE deleted_at IS NULL AND folder_id IS NULL AND name = ?1`).bind(name)
+    : env.db.prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE deleted_at IS NULL AND folder_id = ?1 AND name = ?2`).bind(parentId, name);
   return await stmt.first<DBFile>();
 }
 
@@ -213,7 +214,7 @@ async function filesInFolders(env: Env, ids: FolderRef[]): Promise<DBFile[]> {
     }
   }
   const { results } = await env.db
-    .prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE ${conds.join(" OR ")} ORDER BY name`)
+    .prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE deleted_at IS NULL AND (${conds.join(" OR ")}) ORDER BY name`)
     .bind(...binds)
     .all<DBFile>();
   return results ?? [];
@@ -603,10 +604,16 @@ async function handleWebDavDelete(env: Env, internalPath: string): Promise<Respo
   if (loc.kind === "missing") return new Response("Not Found", { status: 404 });
 
   const st = await storage(env);
+  const s = await getSettings(env);
+  /** 走回收站：返回真正需要从存储拿掉的 key（软删除时为空） */
+  const trash = async (ids: string[]) => {
+    const r = await removeFiles(env, ids, s.trashRetentionDays);
+    for (const key of r.keys) await st.delete(key).catch(() => {});
+    return r;
+  };
 
   if (loc.kind === "file") {
-    await env.db.batch(fileDeleteStmts(env, loc.file.id));
-    await st.delete(loc.file.key).catch(() => {});
+    await trash([loc.file.id]);
     return new Response(null, { status: 204 });
   }
 
@@ -615,11 +622,9 @@ async function handleWebDavDelete(env: Env, internalPath: string): Promise<Respo
   const tree = await getFolderTree(env);
   const ids = tree.subtreeIds(loc.node.id);
   const files = await filesInFolders(env, ids);
-  const stmts = files.flatMap((f) => fileDeleteStmts(env, f.id));
-  stmts.push(...deleteFoldersStmt(env, ids));
-  await env.db.batch(stmts);
+  await trash(files.map((f) => f.id));
+  await env.db.batch(deleteFoldersStmt(env, ids));
   invalidateFolderTree();
-  for (const f of files) await st.delete(f.key).catch(() => {});
   return new Response(null, { status: 204 });
 }
 

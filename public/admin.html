@@ -418,6 +418,13 @@ const I18N = {
     newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
     folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
     fileSearchPh: '搜索文件名…',
+    // 回收站
+    trashView: '🗑 回收站', liveView: '📁 文件列表', trashedAt: '删除时间', trashEmpty: '回收站是空的',
+    restore: '恢复', purge: '彻底删除', batchRestore: '批量恢复', batchPurge: '批量彻底删除', purgeAll: '清空回收站',
+    trashHint: '回收站里的文件仍占用存储配额；超过保留期会被自动彻底清除。',
+    confirmPurgeT: '彻底删除', confirmPurgeD: '将立即删除 {n} 个文件及其存储对象，并连带清掉它们的分享与直链。此操作不可恢复。',
+    confirmPurgeAllT: '清空回收站', confirmPurgeAllD: '将立即彻底删除回收站里的全部条目（每批最多 200 条）。此操作不可恢复。',
+    restoredToast: '已恢复 {n} 个文件', purgedToast: '已彻底删除 {n} 个文件', purgeAllDone: '回收站已清空（本批 {n} 条）',
     uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除空文件夹「{name}」？只有不含文件和子目录的文件夹才能删除。',
     folderDeleted: '文件夹已删除', folderCreatedToast: '已创建文件夹「{name}」',
     tooLarge: '「{name}」超过 {mb} MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
@@ -469,6 +476,8 @@ const I18N = {
     maxUploadD: '服务端会真的拦下超限上传（413），不再只是前端提示；0 表示只受 Workers 100 MB 请求体限制约束。',
     storageQuota: '总存储配额（MB）',
     storageQuotaD: '按已用存储判断，超限的上传会被拒绝并回滚（507）；0 表示不限。',
+    trashDays: '回收站保留天数',
+    trashDaysD: '删除先进回收站，到期由定时任务彻底清除；期间对象仍占存储配额。0 = 关闭回收站（删除即物理删除）。最长 90 天。',
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
     resetTraffic: '重置本月流量', resetTrafficD: '将已用流量清零，立即恢复下载服务', reset: '重置',
     perIp: '单 IP 最大下载次数',
@@ -481,13 +490,13 @@ const I18N = {
     trafficResetOk: '本月流量已重置', confirmResetT: '重置流量',
     confirmResetD: '将本月已用流量清零并立即恢复下载服务？',
     // 文件删除
-    deleteFileT: '删除文件', deleteFileD: '确定删除「{name}」？其所有分享链接和下载记录也会一并删除。',
-    fileDeleted: '文件已删除',
+    deleteFileT: '删除文件', deleteFileD: '把「{name}」移入回收站？它的分享与直链会暂时失效，恢复后原样可用；到期或被彻底删除时才连带清除。',
+    fileDeleted: '已移入回收站',
     // 批量选择与批量操作
     colSelect: '选择', selAll: '全选', clearSel: '取消选择', selectedN: '已选 {n} 项',
     batchDel: '删除选中', batchDelT: '批量删除文件',
-    batchDelD: '确定删除选中的 {n} 个文件？它们的分享链接、直链和下载记录会一并删除，且无法恢复。',
-    batchDeleted: '已删除 {n} 个文件', batchSkipped: '（{n} 个已不存在）',
+    batchDelD: '把选中的 {n} 个文件移入回收站？它们的分享与直链会暂时失效，保留期内可以恢复。',
+    batchDeleted: '已移入回收站 {n} 个', batchSkipped: '（{n} 个已不存在）',
     batchMovePh: '移动到…', movedN: '已移动 {n} 个文件',
     batchRevoke: '撤销选中', batchRevokeT: '批量撤销分享链接',
     batchRevokeD: '确定撤销选中的 {n} 条分享链接？文件本身会保留。',
@@ -737,6 +746,13 @@ const I18N = {
     newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
     folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
     fileSearchPh: 'Search file name…',
+    // Recycle bin
+    trashView: '🗑 Trash', liveView: '📁 Files', trashedAt: 'Deleted', trashEmpty: 'Trash is empty',
+    restore: 'Restore', purge: 'Delete forever', batchRestore: 'Restore selected', batchPurge: 'Delete selected forever', purgeAll: 'Empty trash',
+    trashHint: 'Items in the trash still count against storage quota; expired ones are deleted automatically.',
+    confirmPurgeT: 'Delete forever', confirmPurgeD: 'This deletes {n} file(s) and their storage objects right now, along with their shares and direct links. Cannot be undone.',
+    confirmPurgeAllT: 'Empty trash', confirmPurgeAllD: 'Permanently delete every item in the trash (up to 200 per run). Cannot be undone.',
+    restoredToast: 'Restored {n} file(s)', purgedToast: 'Deleted {n} file(s) forever', purgeAllDone: 'Trash emptied ({n} deleted)',
     uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete the empty folder "{name}"? Only folders without files or subfolders can be deleted.',
     folderDeleted: 'Folder deleted', folderCreatedToast: 'Folder "{name}" created',
     tooLarge: '"{name}" exceeds the {mb} MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
@@ -788,6 +804,8 @@ const I18N = {
     maxUploadD: 'The server now really rejects oversized uploads (413) instead of only warning in the UI. 0 = limited only by the Workers 100 MB request-body cap.',
     storageQuota: 'Storage Quota (MB)',
     storageQuotaD: 'Uploads that would exceed the quota are refused and rolled back (507). 0 = unlimited.',
+    trashDays: 'Trash Retention (days)',
+    trashDaysD: 'Deletes go to the trash first and are purged by the scheduled job once expired; objects still count against storage meanwhile. 0 disables the trash (immediate permanent delete). Max 90.',
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
     resetTraffic: 'Reset Monthly Traffic', resetTrafficD: 'Zero out used traffic and resume downloads immediately', reset: 'Reset',
     perIp: 'Max Downloads per IP',
@@ -800,13 +818,13 @@ const I18N = {
     trafficResetOk: 'Monthly traffic has been reset', confirmResetT: 'Reset traffic',
     confirmResetD: 'Zero out this month\'s traffic and resume downloads?',
     // 文件删除
-    deleteFileT: 'Delete file', deleteFileD: 'Delete "{name}"? All its share links and logs will also be deleted.',
-    fileDeleted: 'File deleted',
+    deleteFileT: 'Delete file', deleteFileD: 'Move "{name}" to the trash? Its share and direct links go offline until restored; they are cleared only on permanent deletion or expiry.',
+    fileDeleted: 'Moved to trash',
     // 批量选择与批量操作
     colSelect: 'Select', selAll: 'Select all', clearSel: 'Clear', selectedN: '{n} selected',
     batchDel: 'Delete selected', batchDelT: 'Delete files',
-    batchDelD: 'Delete the {n} selected files? Their share links, direct links and download logs will be removed permanently.',
-    batchDeleted: 'Deleted {n} files', batchSkipped: ' ({n} were already gone)',
+    batchDelD: 'Move the {n} selected files to the trash? Their share and direct links go offline but can be restored within the retention period.',
+    batchDeleted: 'Moved {n} files to trash', batchSkipped: ' ({n} were already gone)',
     batchMovePh: 'Move to…', movedN: 'Moved {n} files',
     batchRevoke: 'Revoke selected', batchRevokeT: 'Revoke share links',
     batchRevokeD: 'Revoke the {n} selected share links? The files themselves are kept.',
@@ -1454,6 +1472,7 @@ function wireSelection(set, ids){
 let filesFolder = null; // null=全部 | 'root'=根目录 | 其他=文件夹 id
 let filesPage = 1;
 let filesQuery = '';
+let filesTrash = false; // true = 回收站视图
 let filesSortKey = 'uploaded_at';
 let filesSortDir = 'desc';
 let filesTotalPages = 1;
@@ -1465,7 +1484,8 @@ async function loadFiles(){
   let folders = [];
   try { ({ folders } = await api('/api/admin/folders')); } catch {}
   const sp = new URLSearchParams({ page: String(filesPage), size: String(FILES_PAGE_SIZE), sort: filesSortKey, dir: filesSortDir });
-  if (filesFolder) sp.set('folder', filesFolder);
+  if (filesTrash) sp.set('trash', '1');
+  else if (filesFolder) sp.set('folder', filesFolder);
   if (filesQuery) sp.set('q', filesQuery);
   let { files, total } = await api('/api/admin/files?' + sp.toString());
   total = Number(total) || 0;
@@ -1476,29 +1496,31 @@ async function loadFiles(){
   const viewName = filesFolder === 'root' ? t('folderFilterRoot') : (filesFolder && fmap[filesFolder]) ? `📁 ${fmap[filesFolder]}` : t('folderFilterAll');
   $('#view').innerHTML = `
     <div class="glass section" style="padding:14px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <button class="btn sm primary" id="fo-new">📁 ${esc(t('newFolder'))}</button>
+      <button class="btn sm ${filesTrash ? '' : 'primary'}" id="fo-trash">${esc(filesTrash ? t('liveView') : t('trashView'))}</button>
+      ${filesTrash ? '' : `<button class="btn sm primary" id="fo-new">📁 ${esc(t('newFolder'))}</button>
       <select id="fo-filter" style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
         <option value="">${esc(t('folderFilterAll'))}</option>
         <option value="root">${esc(t('folderFilterRoot'))}</option>
         ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(fmap[f.id])}（${f.file_count}）</option>`).join('')}
-      </select>
+      </select>`}
       <input id="fo-search" type="search" value="${esc(filesQuery)}" placeholder="${esc(t('fileSearchPh'))}" autocomplete="off"
         style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;min-width:180px">
-      ${fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
-      <span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>
+      ${!filesTrash && fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
+      ${filesTrash ? `<button class="btn sm danger" id="tp-purge-all">${esc(t('purgeAll'))}</button><span style="opacity:.7;font-size:13px">${esc(t('trashHint'))}</span>`
+        : `<span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>`}
     </div>
-    <div class="dropzone" id="dropzone">
+    ${filesTrash ? '' : `<div class="dropzone" id="dropzone">
       <div class="icon">☁️</div>
       <div class="t">${esc(t('dropTitle'))}</div>
       <div class="d">${esc(t('dropDesc', { mb: maxUploadMb }))}</div>
       <input type="file" id="file-input" multiple hidden>
     </div>
-    <div id="upload-list"></div>
+    <div id="upload-list"></div>`}
     <div class="glass section">
-      <div class="section-title"><h2>📁 ${esc(viewName)}（${esc(t('totalN', { n: total }))}）</h2></div>
+      <div class="section-title"><h2>${filesTrash ? '🗑' : '📁'} ${esc(filesTrash ? t('trashView').replace(/^🗑\s*/, '') : viewName)}（${esc(t('totalN', { n: total }))}）</h2></div>
       ${files.length ? `
       <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th class="ck-cell">${ckHead}</th><th class="sortable" data-sort="name">${esc(t('colName'))}${sortMark('name')}</th><th>${esc(t('colFolder'))}</th><th class="sortable" data-sort="size">${esc(t('colSize'))}${sortMark('size')}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th class="sortable" data-sort="uploaded_at">${esc(t('colUploaded'))}${sortMark('uploaded_at')}</th><th style="width:300px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th class="ck-cell">${ckHead}</th><th class="sortable" data-sort="name">${esc(t('colName'))}${sortMark('name')}</th><th>${esc(t('colFolder'))}</th><th class="sortable" data-sort="size">${esc(t('colSize'))}${sortMark('size')}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th class="sortable" data-sort="${filesTrash ? 'deleted_at' : 'uploaded_at'}">${esc(filesTrash ? t('trashedAt') : t('colUploaded'))}${sortMark(filesTrash ? 'deleted_at' : 'uploaded_at')}</th><th style="width:300px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
             <td class="ck-cell">${ckbox(f.id)}${ficon(f.name)}</td>
@@ -1507,12 +1529,15 @@ async function loadFiles(){
             <td class="num">${fmtSize(f.size)}</td>
             <td class="num">${f.share_count}</td>
             <td class="num">${f.download_count}</td>
-            <td class="num">${fmtTime(f.uploaded_at)}</td>
+            <td class="num">${fmtTime(filesTrash ? f.deleted_at : f.uploaded_at)}</td>
             <td><div class="actions-cell">
+              ${filesTrash ? `
+              <button class="btn sm primary" data-restore="${f.id}">${esc(t('restore'))}</button>
+              <button class="btn sm danger" data-purge="${f.id}" data-name="${esc(f.name)}">${esc(t('purge'))}</button>` : `
               <a class="btn sm" href="/api/admin/files/${encodeURIComponent(f.id)}/download">⬇ ${esc(t('dlFile'))}</a>
               ${canPreview(f.mime) ? `<a class="btn sm" href="/api/admin/files/${encodeURIComponent(f.id)}/download?inline=1" target="_blank" rel="noopener">🔍 ${esc(t('pvFile'))}</a>` : ''}
               <button class="btn sm primary" data-share="${f.id}">${esc(t('createShare'))}</button>
-              <button class="btn sm danger" data-del="${f.id}" data-name="${esc(f.name)}">${esc(t('del'))}</button>
+              <button class="btn sm danger" data-del="${f.id}" data-name="${esc(f.name)}">${esc(t('del'))}</button>`}
             </div></td>
           </tr>`).join('')}
         </tbody>
@@ -1522,7 +1547,7 @@ async function loadFiles(){
         <button class="btn sm" id="fp-prev" ${filesPage <= 1 ? 'disabled style="opacity:.4;pointer-events:none"' : ''}>${esc(t('prev'))}</button>
         <span style="opacity:.75">${esc(t('pageOf', { a: filesPage, b: filePages(total) }))}</span>
         <button class="btn sm" id="fp-next" ${filesPage >= filePages(total) ? 'disabled style="opacity:.4;pointer-events:none"' : ''}>${esc(t('next'))}</button>
-      </div>` : ''}` : `<div class="empty"><div class="icon">📭</div>${esc(filesQuery ? t('noMatch') : t('noFiles'))}</div>`}
+      </div>` : ''}` : `<div class="empty"><div class="icon">${filesTrash ? '🗑' : '📭'}</div>${esc(filesTrash ? t('trashEmpty') : (filesQuery ? t('noMatch') : t('noFiles')))}</div>`}
     </div>
     <div class="batch-bar" id="batch-bar">
       <div class="bb-row">
@@ -1530,18 +1555,32 @@ async function loadFiles(){
         <button class="btn sm" id="bb-clear">✕ ${esc(t('clearSel'))}</button>
       </div>
       <div class="bb-row">
+        ${filesTrash ? `
+          <button class="btn sm primary" id="bb-restore">↩ ${esc(t('batchRestore'))}</button>
+          <button class="btn sm danger" id="bb-purge">🗑 ${esc(t('batchPurge'))}</button>` : `
         <select id="bb-move" class="sel" title="${esc(t('batchMovePh'))}">
           <option value="" selected>${esc(t('batchMovePh'))}</option>
           <option value="__root">${esc(t('folderFilterRoot'))}</option>
           ${folders.map(f => `<option value="${esc(f.id)}">📁 ${esc(fmap[f.id])}</option>`).join('')}
         </select>
-        <button class="btn sm danger" id="bb-del">🗑 ${esc(t('batchDel'))}</button>
+        <button class="btn sm danger" id="bb-del">🗑 ${esc(t('batchDel'))}</button>`}
       </div>
     </div>`;
 
   const sel = $('#fo-filter');
-  sel.value = filesFolder || '';
-  sel.onchange = () => { filesFolder = sel.value || null; filesPage = 1; selFiles.clear(); loadFiles(); };
+  if (sel) {
+    sel.value = filesFolder || '';
+    sel.onchange = () => { filesFolder = sel.value || null; filesPage = 1; selFiles.clear(); loadFiles(); };
+  }
+  $('#fo-trash').onclick = () => {
+    filesTrash = !filesTrash;
+    filesPage = 1;
+    filesQuery = '';
+    filesSortKey = filesTrash ? 'deleted_at' : 'uploaded_at';
+    filesSortDir = 'desc';
+    selFiles.clear();
+    loadFiles();
+  };
   const searchEl = $('#fo-search');
   let searchTimer = null;
   searchEl.oninput = () => {
@@ -1564,7 +1603,8 @@ async function loadFiles(){
       filesPage = 1; loadFiles();
     };
   });
-  $('#fo-new').onclick = openNewFolderModal;
+  const newBtn = $('#fo-new');
+  if (newBtn) newBtn.onclick = openNewFolderModal;
   const delBtn = $('#fo-del');
   if(delBtn) delBtn.onclick = async () => {
     const name = fmap[filesFolder] || '';
@@ -1578,11 +1618,43 @@ async function loadFiles(){
   };
 
   const dz = $('#dropzone'), fi = $('#file-input');
-  dz.onclick = () => fi.click();
-  dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
-  dz.ondragleave = () => dz.classList.remove('over');
-  dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); uploadFiles([...e.dataTransfer.files]); };
-  fi.onchange = () => { uploadFiles([...fi.files]); fi.value = ''; };
+  if (dz && fi) {
+    dz.onclick = () => fi.click();
+    dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
+    dz.ondragleave = () => dz.classList.remove('over');
+    dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); uploadFiles([...e.dataTransfer.files]); };
+    fi.onchange = () => { uploadFiles([...fi.files]); fi.value = ''; };
+  }
+
+  const purgeIds = async (ids) => {
+    if (!ids.length) return;
+    if (!(await confirmDialog(t('confirmPurgeT'), t('confirmPurgeD', { n: ids.length })))) return;
+    const r = await api('/api/admin/files/batch-delete', { method: 'POST', body: JSON.stringify({ ids, mode: 'purge' }) });
+    toast(t('purgedToast', { n: r.purged ?? ids.length }));
+    selFiles.clear();
+    loadFiles();
+  };
+  const restoreIds = async (ids) => {
+    if (!ids.length) return;
+    const r = await api('/api/admin/files/batch-restore', { method: 'POST', body: JSON.stringify({ ids }) });
+    toast(t('restoredToast', { n: r.restored ?? ids.length }));
+    selFiles.clear();
+    loadFiles();
+  };
+  $$('[data-restore]').forEach(b => b.onclick = () => restoreIds([b.dataset.restore]));
+  $$('[data-purge]').forEach(b => b.onclick = () => purgeIds([b.dataset.purge]));
+  const br = $('#bb-restore');
+  if (br) br.onclick = () => restoreIds([...selFiles]);
+  const bp = $('#bb-purge');
+  if (bp) bp.onclick = () => purgeIds([...selFiles]);
+  const pa = $('#tp-purge-all');
+  if (pa) pa.onclick = async () => {
+    if (!(await confirmDialog(t('confirmPurgeAllT'), t('confirmPurgeAllD')))) return;
+    const r = await api('/api/admin/trash/cleanup', { method: 'POST', body: JSON.stringify({ all: true }) });
+    toast(t('purgeAllDone', { n: r.purged ?? 0 }));
+    selFiles.clear();
+    loadFiles();
+  };
 
   $$('[data-share]').forEach(b => b.onclick = () => openShareModal(b.dataset.share));
   $$('[data-del]').forEach(b => b.onclick = async () => {
@@ -2601,6 +2673,10 @@ async function loadSettings(){
         <div class="info"><div class="t">🗄️ ${esc(t('storageQuota'))}</div><div class="d">${esc(t('storageQuotaD'))}</div></div>
         <input type="number" id="st-quota" min="0" step="100" value="${s.storage_quota_mb ?? 0}">
       </div>
+      <div class="row">
+        <div class="info"><div class="t">🗑 ${esc(t('trashDays'))}</div><div class="d">${esc(t('trashDaysD'))}</div></div>
+        <input type="number" id="st-trash-days" min="0" max="90" step="1" value="${s.trash_retention_days ?? 7}">
+      </div>
     </div>
     <div class="glass group">
       <div class="row">
@@ -2799,6 +2875,7 @@ async function loadSettings(){
       traffic_limit_gb: Number($('#st-limit').value) || 0,
       max_upload_mb: Number($('#st-max-upload').value) || 0,
       storage_quota_mb: Number($('#st-quota').value) || 0,
+      trash_retention_days: Math.max(0, Math.min(90, Number($('#st-trash-days')?.value) || 0)),
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,
       auto_ban: $('#st-autoban').checked,

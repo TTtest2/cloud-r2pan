@@ -75,7 +75,7 @@ export function escapeLike(s: string): string {
 export async function queryMarket(env: Env, params: MarketParams, now = Date.now()): Promise<MarketListing> {
   // 只返回有效分享：上架、未撤销、没过期、没达上限、有密码的隐藏
   // ⚠️ SQLite + D1 只支持纯 ? 占位符，不支持 ?N1 / ?Q1 这类扩展语法
-  const activeFilter = ` AND s.is_market = 1 AND s.revoked = 0
+  const activeFilter = ` AND s.is_market = 1 AND s.revoked = 0 AND f.deleted_at IS NULL
     AND (s.expires_at IS NULL OR s.expires_at > ?)
     AND (s.max_downloads IS NULL OR s.download_count < s.max_downloads)
     AND s.password_hash IS NULL`;

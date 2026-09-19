@@ -230,7 +230,7 @@ async function getShare(env: Env, token: string): Promise<ShareWithFile | null> 
     `SELECT s.id, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked, s.password_hash,
             s.download_name, f.key, f.name, f.size, f.mime
      FROM shares s JOIN files f ON f.id = s.file_id
-     WHERE s.id = ?1`
+     WHERE s.id = ?1 AND f.deleted_at IS NULL`
   )
     .bind(token)
     .first<ShareWithFile>();
@@ -242,7 +242,7 @@ async function getDirectLink(env: Env, token: string): Promise<DirectLinkWithFil
     `SELECT dl.id, dl.file_id, dl.created_at, dl.expires_at, dl.max_downloads, dl.download_count, dl.revoked,
             dl.download_name, f.key, f.name, f.size, f.mime
      FROM direct_links dl JOIN files f ON f.id = dl.file_id
-     WHERE dl.id = ?1`
+     WHERE dl.id = ?1 AND f.deleted_at IS NULL`
   )
     .bind(token)
     .first<DirectLinkWithFile>();

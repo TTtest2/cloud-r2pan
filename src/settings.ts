@@ -101,6 +101,13 @@ export interface Settings {
   /** 浮动按钮位置：top-right（右上）或 top-left（左上）。默认 top-right。 */
   codesFloatingButtonPosition: "top-right" | "top-left";
 
+  // ═══════ 回收站 ═══════
+  /**
+   * 已删除文件在回收站里保留多少天，到期后由 cron 彻底清除。
+   * 0 = 关闭回收站（删除即物理删除）。软删除期间对象仍占存储配额。
+   */
+  trashRetentionDays: number;
+
   // ═══════ 存储后端（R2 / S3 兼容） ═══════
   /**
    * 存储后端选择：
@@ -166,6 +173,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // 激活码浮动按钮
   codesFloatingButtonEnabled: true,
   codesFloatingButtonPosition: "top-right",
+  // 回收站 —— 默认留 7 天；对象仍在 R2 里占存储配额，到期由 cron 彻底删除
+  trashRetentionDays: 7,
   // 存储后端 —— 默认 R2（向后兼容）
   storageProvider: "r2",
   s3Endpoint: null,
@@ -244,6 +253,8 @@ export async function getSettings(env: Env): Promise<Settings> {
     // 激活码浮动按钮
     codesFloatingButtonEnabled: map.get("codes_floating_button_enabled") !== "0", // 默认 true
     codesFloatingButtonPosition: (map.get("codes_floating_button_position") ?? DEFAULT_SETTINGS.codesFloatingButtonPosition) as Settings["codesFloatingButtonPosition"],
+    // 回收站保留天数（上限 90 天：软删除期间对象照样占 R2 存储）
+    trashRetentionDays: Math.min(90, toInt(map.get("trash_retention_days"), DEFAULT_SETTINGS.trashRetentionDays)),
     // 存储后端
     storageProvider: (map.get("storage_provider") ?? "r2") as Settings["storageProvider"],
     s3Endpoint: map.get("s3_endpoint") ?? null,

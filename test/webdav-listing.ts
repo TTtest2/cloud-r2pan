@@ -31,7 +31,7 @@ function check(name: string, cond: boolean, detail?: string) {
 const bucket = new Map<string, { data: Uint8Array; contentType: string }>();
 
 interface FolderRow { id: string; name: string; parent_id: string | null; created_at: number }
-interface FileRow { id: string; key: string; name: string; size: number; mime: string; folder_id: string | null; uploaded_at: number }
+interface FileRow { id: string; key: string; name: string; size: number; mime: string; folder_id: string | null; uploaded_at: number; deleted_at: number | null }
 
 class Store {
   folders: FolderRow[] = [];
@@ -56,11 +56,11 @@ class Store {
   }
 
   addFile(id: string, name: string, folderId: string | null, size = 10, mime = "text/plain") {
-    this.files.push({ id, key: `files/${id}`, name, size, mime, folder_id: folderId, uploaded_at: 1_700_000_000_000 });
+    this.files.push({ id, key: `files/${id}`, name, size, mime, folder_id: folderId, uploaded_at: 1_700_000_000_000, deleted_at: null });
   }
 
   fileByName(name: string, folderId: string | null) {
-    return this.files.find((f) => f.name === name && f.folder_id === folderId) ?? null;
+    return this.files.find((f) => !f.deleted_at && f.name === name && f.folder_id === folderId) ?? null;
   }
 
   run(sql: string, binds: unknown[]): any {
@@ -76,16 +76,28 @@ class Store {
     }
 
     if (/FROM files/.test(norm) && /^SELECT/.test(norm)) {
-      const cols = /WHERE folder_id IS NULL AND name = \?1/.test(norm);
-      const byParent = /WHERE folder_id = \?1 AND name = \?2/.test(norm);
+      // 回收站/彻底删除前的行查询：WHERE id IN (?1, ?2…) [AND deleted_at IS NULL]
+      const byIds = /^SELECT id, key, folder_id FROM files WHERE id IN \(([^)]*)\)( AND deleted_at IS NULL)?/.exec(norm);
+      if (byIds) {
+        const n = byIds[1].split(",").length;
+        const ids = binds.slice(0, n).map(String);
+        const liveOnly = !!byIds[2];
+        return {
+          results: this.files
+            .filter((f) => ids.includes(f.id) && (!liveOnly || !f.deleted_at))
+            .map((f) => ({ id: f.id, key: f.key, folder_id: f.folder_id })),
+        };
+      }
+      const cols = /WHERE (?:deleted_at IS NULL AND )?folder_id IS NULL AND name = \?1/.test(norm);
+      const byParent = /WHERE (?:deleted_at IS NULL AND )?folder_id = \?1 AND name = \?2/.test(norm);
       if (cols) {
         const name = String(binds[0]);
-        return { results: this.files.filter((f) => f.folder_id === null && f.name === name).slice(0, 1) };
+        return { results: this.files.filter((f) => !f.deleted_at && f.folder_id === null && f.name === name).slice(0, 1) };
       }
       if (byParent) {
         const parentId = String(binds[0]);
         const name = String(binds[1]);
-        return { results: this.files.filter((f) => f.folder_id === parentId && f.name === name).slice(0, 1) };
+        return { results: this.files.filter((f) => !f.deleted_at && f.folder_id === parentId && f.name === name).slice(0, 1) };
       }
       // 按目录集合取文件：folder_id IS NULL / folder_id = ?N 的 OR 组合
       const wanted: (string | null)[] = [];
@@ -93,15 +105,30 @@ class Store {
         wanted.push(m[1] === "IS NULL" ? null : binds[Number(m[2]) - 1] as string);
       }
       const hit = wanted.length
-        ? this.files.filter((f) => wanted.some((id) => (id === null ? f.folder_id === null : f.folder_id === id)))
+        ? this.files.filter((f) => !f.deleted_at && wanted.some((id) => (id === null ? f.folder_id === null : f.folder_id === id)))
         : [];
       return { results: hit.sort((a, b) => (a.name < b.name ? -1 : 1)).map((f) => ({ ...f })) };
     }
 
     if (/^INSERT INTO files\(/.test(norm)) {
       const [id, key, name, size, mime, uploaded_at, folder_id] = binds as any[];
-      this.files.push({ id, key, name, size, mime, folder_id, uploaded_at });
+      this.files.push({ id, key, name, size, mime, folder_id, uploaded_at, deleted_at: null });
       return { meta: { changes: 1 } };
+    }
+
+    // 软删除进回收站
+    const soft = /^UPDATE files SET deleted_at = \?1 WHERE id IN \(([^)]*)\) AND deleted_at IS NULL/.exec(norm);
+    if (soft) {
+      const ts = Number(binds[0]);
+      const ids = binds.slice(1, 1 + soft[1].split(",").length).map(String);
+      let n = 0;
+      for (const f of this.files) {
+        if (ids.includes(f.id) && !f.deleted_at) {
+          f.deleted_at = ts;
+          n++;
+        }
+      }
+      return { meta: { changes: n } };
     }
 
     if (/^UPDATE files SET folder_id = \?1, name = \?2 WHERE id = \?3/.test(norm)) {
@@ -438,24 +465,26 @@ async function main() {
     check("MKCOL 后新目录立即可列举（缓存即时失效）", inList.hrefs.includes(`${BASE}/dir/newdir/`), inList.hrefs.join(" "));
   }
 
-  console.log("\n[9] DELETE 与级联");
+  console.log("\n[9] DELETE 走回收站");
   {
     seed();
+    const aRow = store.fileByName("a.txt", "dir")!;
     const del = await request("DELETE", "/dir/a.txt");
     check("删文件 → 204", del.status === 204, String(del.status));
-    check("文件行已消失", store.fileByName("a.txt", "dir") === null);
-    check("级联删了 shares/direct_links/download_logs",
-      ["shares", "direct_links", "download_logs"].every((t) => store.cascadeTables.includes(t)),
-      store.cascadeTables.join(","));
+    check("对外已不可见", store.fileByName("a.txt", "dir") === null);
+    check("行没被物理删除，只打了 deleted_at", store.files.some((f) => f.id === aRow.id && f.deleted_at !== null),
+      JSON.stringify(store.files.map((f) => [f.name, f.deleted_at])));
+    check("软删除不级联删 shares/direct_links/download_logs", store.cascadeTables.length === 0, store.cascadeTables.join(","));
+    check("没有对 files 发物理 DELETE", !store.queries.some((q) => /^DELETE FROM files/.test(q)), store.queries.join(" | "));
     const delMissing = await request("DELETE", "/dir/a.txt");
     check("再删一次 → 404", delMissing.status === 404, String(delMissing.status));
     const delRoot = await request("DELETE", "/");
     check("删根 → 403", delRoot.status === 403, String(delRoot.status));
 
-    const before = store.files.length;
     const delDir = await request("DELETE", "/dir");
     check("递归删目录 → 204", delDir.status === 204, String(delDir.status));
-    check("子树里的文件全删（" + before + " 个）", store.files.filter((f) => f.folder_id !== null).length === 0, JSON.stringify(store.files.map((f) => [f.name, f.folder_id])));
+    check("子树里的文件全部进回收站", store.files.filter((f) => f.folder_id !== null && !f.deleted_at).length === 0,
+      JSON.stringify(store.files.map((f) => [f.name, f.folder_id, f.deleted_at])));
     check("dir 与 sub 目录行都没了", !store.folders.some((f) => f.id === "dir" || f.id === "sub"));
     check("根下的文件不受影响", store.fileByName("notes.txt", null) !== null);
     const after = await propfind("/", "1");
@@ -494,7 +523,10 @@ async function main() {
     check("目标已存在且 Overwrite:F → 412", noOverwrite.status === 412, String(noOverwrite.status));
     const withOverwrite = await request("MOVE", "/dir2/b.txt", { destination: "https://pan.example.com/webdav/dir2/renamed.txt" });
     check("覆盖式移动 → 204", withOverwrite.status === 204, String(withOverwrite.status));
-    check("被覆盖的旧文件已删除", store.files.filter((f) => f.name === "renamed.txt").length === 1);
+    check("被覆盖的旧文件已不可见（进回收站，对象还在）",
+      store.files.filter((f) => f.name === "renamed.txt" && !f.deleted_at).length === 1 &&
+      store.files.some((f) => f.name === "renamed.txt" && f.deleted_at !== null),
+      JSON.stringify(store.files.filter((f) => f.name === "renamed.txt").map((f) => [f.id, f.deleted_at])));
   }
 
   console.log("\n[11] COPY");
