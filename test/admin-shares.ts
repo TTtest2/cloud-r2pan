@@ -44,6 +44,8 @@ interface ShareRow {
 class FakeDb {
   shares: ShareRow[] = [];
   queries: string[] = [];
+  updates: { id: string; cols: string[] }[] = [];
+  inserts: unknown[][] = [];
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -61,7 +63,7 @@ class FakeDb {
         return { results: self.dispatch(norm, binds, "all") ?? [] };
       },
       async run() {
-        return { success: true, meta: { changes: 1 } };
+        return (await self.dispatch(norm, binds, "run")) ?? { success: true, meta: { changes: 1 } };
       },
     };
     return stmt;
@@ -104,16 +106,43 @@ class FakeDb {
       if (!row) return null;
       return { password_cipher: row.password_cipher };
     }
+    if (/^SELECT id, password_hash FROM shares WHERE id = \?1/.test(sql)) {
+      const row = this.shares.find((s) => s.id === binds[0]);
+      if (!row) return null;
+      return { id: row.id, password_hash: row.password_hash };
+    }
+    if (/^UPDATE shares SET /.test(sql)) {
+      const id = binds[binds.length - 1] as string;
+      const row = this.shares.find((s) => s.id === id);
+      if (!row) return { meta: { changes: 0 } };
+      const setPart = sql.slice(sql.indexOf("SET ") + 4, sql.indexOf(" WHERE "));
+      const cols = [...setPart.matchAll(/([a-z_]+) = \?\d/g)].map((m) => m[1]);
+      cols.forEach((c, i) => ((row as any)[c] = binds[i]));
+      this.updates.push({ id, cols });
+      return { meta: { changes: 1 } };
+    }
+    if (/^SELECT id FROM files WHERE id = \?1/.test(sql)) {
+      return binds[0] ? { id: binds[0] } : null;
+    }
+    if (/^INSERT INTO shares\(/.test(sql)) {
+      this.inserts.push(binds);
+      return { meta: { changes: 1 } };
+    }
     throw new Error("未覆盖的 SQL: " + sql);
   }
 }
 
-async function call(db: FakeDb, path: string) {
+async function call(db: FakeDb, path: string, opts: { method?: string; body?: unknown } = {}) {
   const env: any = { db, admin: ADMIN_KEY };
   const cookie = (await createSession(env)).split(";")[0];
   const req = new Request("https://pan.test" + path, {
-    method: "GET",
-    headers: { cookie, "cf-connecting-ip": "203.0.113.1" },
+    method: opts.method ?? "GET",
+    headers: {
+      cookie,
+      "cf-connecting-ip": "203.0.113.1",
+      ...(opts.body ? { "content-type": "application/json" } : {}),
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const res = await handleAdminApi(req, env, { waitUntil() {}, props: {} } as any, new URL(req.url).pathname);
   return { status: res.status, body: await res.json().catch(() => null) };
@@ -186,6 +215,32 @@ async function main() {
     check("没设口令返回 null", (none.body as any)?.password === null, JSON.stringify(none.body));
     const ghost = await call(db, "/api/admin/shares/nope/password");
     check("未知分享 404", ghost.status === 404, String(ghost.status));
+  }
+
+  console.log("\n[3] 上下架下载市场");
+  {
+    const { db } = await seedDb(3);
+    const ok = await call(db, "/api/admin/shares/sh1/market", { method: "PUT", body: { is_market: true } });
+    check("无口令的分享可以上架", ok.status === 200, String(ok.status));
+    check("确实写了 is_market", db.shares.find((s) => s.id === "sh1")?.is_market === 1, JSON.stringify(db.updates));
+    check("只更新这一列", JSON.stringify(db.updates) === JSON.stringify([{ id: "sh1", cols: ["is_market"] }]), JSON.stringify(db.updates));
+
+    const blocked = await call(db, "/api/admin/shares/sh0/market", { method: "PUT", body: { is_market: true } });
+    check("带口令的分享不能上架", blocked.status === 400, String(blocked.status));
+    check("被拒时不写库", db.shares.find((s) => s.id === "sh0")?.is_market === 0);
+
+    const off = await call(db, "/api/admin/shares/sh1/market", { method: "PUT", body: { is_market: false } });
+    check("下架不受口令限制", off.status === 200 && db.shares.find((s) => s.id === "sh1")?.is_market === 0, String(off.status));
+
+    const missing = await call(db, "/api/admin/shares/ghost/market", { method: "PUT", body: { is_market: true } });
+    check("未知分享 404", missing.status === 404, String(missing.status));
+
+    const createBoth = await call(db, "/api/admin/shares", {
+      method: "POST",
+      body: { file_id: "fl1", password: "hey-there-pw", is_market: true },
+    });
+    check("创建时同时给口令+上架 → 400", createBoth.status === 400, String(createBoth.status));
+    check("被拒时没有插入分享行", createBoth.body === null || db.inserts.length === 0, JSON.stringify(db.inserts));
   }
 
   console.log(`\n${failures === 0 ? "\x1b[32m全部通过\x1b[0m" : `\x1b[31m${failures} 项失败\x1b[0m`}\n`);

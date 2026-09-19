@@ -437,6 +437,12 @@ const I18N = {
     preview: '预览分享页',
     // 分享列表
     sharesTitle: '分享链接', cleanup: '清理失效分享', loadMore: '加载更多',
+    marketCol: '市场', marketOn: '已上架', marketOff: '下架', marketOnBtn: '上架',
+    marketOnToast: '已上架到下载市场', marketOffToast: '已从下载市场下架',
+    marketNeedNoPassword: '带访问口令的分享不能上架到下载市场（市场里会隐藏它），请先去掉口令',
+    shareModalMarket: '上架到下载市场',
+    shareModalMarketD: '下载市场是公开首页，任何人都能浏览并下载。设了访问口令的分享不能上架。',
+    marketTitlePh: '市场标题（可选，默认用文件名）', marketDescPh: '一句话描述（可选）',
     stActive: '有效', stExpired: '已过期', stRevoked: '已撤销', stMaxed: '已满额',
     revoke: '撤销', noShares: '还没有分享链接，去「文件」页创建一个',
     confirmCleanupT: '清理失效分享', confirmCleanupD: '将删除所有已过期、已撤销、已达下载上限的分享链接。',
@@ -749,6 +755,12 @@ const I18N = {
     preview: 'Preview',
     // 分享列表
     sharesTitle: 'Share Links', cleanup: 'Clean up expired', loadMore: 'Load more',
+    marketCol: 'Market', marketOn: 'Listed', marketOff: 'Unlist', marketOnBtn: 'List',
+    marketOnToast: 'Listed on the marketplace', marketOffToast: 'Removed from the marketplace',
+    marketNeedNoPassword: 'Password-protected shares cannot be listed (the marketplace hides them) — remove the password first',
+    shareModalMarket: 'List on the marketplace',
+    shareModalMarketD: 'The marketplace is a public homepage anyone can browse and download from. Password-protected shares cannot be listed.',
+    marketTitlePh: 'Market title (optional, defaults to the file name)', marketDescPh: 'One-line description (optional)',
     stActive: 'Active', stExpired: 'Expired', stRevoked: 'Revoked', stMaxed: 'Maxed out',
     revoke: 'Revoke', noShares: 'No share links yet — create one in Files',
     confirmCleanupT: 'Clean up expired shares', confirmCleanupD: 'This will delete all expired, revoked and maxed-out share links.',
@@ -1633,6 +1645,17 @@ function openShareModal(fileId){
       <div class="tip">${esc(t('downloadNameHint'))}</div>
     </div>
     <div class="field">
+      <label style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="sh-market" style="width:auto">
+        <span>🏪 ${esc(t('shareModalMarket'))}</span>
+      </label>
+      <div class="tip">${esc(t('shareModalMarketD'))}</div>
+      <div id="sh-market-fields" style="display:none;margin-top:8px">
+        <input type="text" id="sh-mkt-title" placeholder="${esc(t('marketTitlePh'))}" maxlength="80" autocomplete="off" style="margin-bottom:8px">
+        <input type="text" id="sh-mkt-desc" placeholder="${esc(t('marketDescPh'))}" maxlength="200" autocomplete="off">
+      </div>
+    </div>
+    <div class="field">
       <label>${esc(t('maxDownloadsLabel'))}</label>
       <input type="number" id="sh-max" min="0" placeholder="${esc(t('unlimitedPlaceholder'))}">
       <div class="tip">${esc(t('maxTip'))}</div>
@@ -1642,13 +1665,22 @@ function openShareModal(fileId){
       <button class="btn primary" id="sh-create">${esc(t('generate'))}</button>
     </div>`);
   $('[data-x]').onclick = closeModal;
+  const mkBox = $('#sh-market');
+  mkBox.onchange = () => { $('#sh-market-fields').style.display = mkBox.checked ? 'block' : 'none'; };
   $('#sh-create').onclick = async () => {
     const exp = Number($('#sh-exp').value) || null;
     const max = Number($('#sh-max').value) || null;
     const password = $('#sh-pwd').value.trim() || null;
     const download_name = $('#sh-dlname').value.trim() || null;
+    const is_market = mkBox.checked;
+    if (is_market && password) { toast(t('marketNeedNoPassword'), 'err'); return; }
     try{
-      const r = await api('/api/admin/shares', { method:'POST', body: JSON.stringify({ file_id: fileId, expires_hours: exp, max_downloads: max, password, download_name }) });
+      const r = await api('/api/admin/shares', { method:'POST', body: JSON.stringify({
+        file_id: fileId, expires_hours: exp, max_downloads: max, password, download_name,
+        is_market,
+        market_title: is_market ? ($('#sh-mkt-title').value.trim() || null) : null,
+        market_desc: is_market ? ($('#sh-mkt-desc').value.trim() || null) : null,
+      }) });
       const url = location.origin + r.url;
       const directUrl = r.direct_url ? location.origin + r.direct_url : null;
       openModal(`
@@ -1700,7 +1732,7 @@ async function loadShares(append = false){
         <button class="btn sm" id="cleanup-shares">${esc(t('cleanup'))}</button></div>
       ${shares.length ? `
       <div style="overflow-x:auto"><table class="tbl tbl-shares">
-        <thead><tr><th class="name-cell ck-cell">${ckHead}${esc(t('colFile'))}</th><th>${esc(t('colLink'))}</th><th>${esc(t('passwordCol'))}</th><th>${esc(t('colDownloads'))} / ${esc(t('colExpires'))}</th><th>${esc(t('colCreated'))}</th><th>${esc(t('colExpires'))}</th><th>${esc(t('colStatus'))}</th><th style="width:80px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th class="name-cell ck-cell">${ckHead}${esc(t('colFile'))}</th><th>${esc(t('colLink'))}</th><th>${esc(t('passwordCol'))}</th><th>${esc(t('marketCol'))}</th><th>${esc(t('colDownloads'))} / ${esc(t('colExpires'))}</th><th>${esc(t('colCreated'))}</th><th>${esc(t('colExpires'))}</th><th>${esc(t('colStatus'))}</th><th style="width:80px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${shares.map(s => {
           return `
           <tr>
@@ -1709,6 +1741,9 @@ async function loadShares(append = false){
             <td class="mono">${s.has_password ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
               <button class="btn sm" data-pw="${s.id}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
               <button class="btn sm" data-cpw="${s.id}" style="padding:2px 8px;font-size:11px">📋</button>` : `<span style="color:var(--text-3)">—</span>`}</td>
+            <td class="mono">${s.is_market
+              ? `<button class="btn sm" data-mkt="${s.id}" data-on="0" title="${esc(t('marketOff'))}">🏪 ${esc(t('marketOn'))}</button>`
+              : `<button class="btn sm" data-mkt="${s.id}" data-on="1">${s.has_password ? '🔒 ' : ''}${esc(t('marketOnBtn'))}</button>`}</td>
             <td class="num">${s.download_count} / ${s.max_downloads ?? '∞'}</td>
             <td class="num">${fmtTime(s.created_at)}</td>
             <td class="num">${s.expires_at ? fmtTime(s.expires_at) : esc(t('forever'))}</td>
@@ -1775,6 +1810,19 @@ async function loadShares(append = false){
       try {
         const v = await fetchPw(b.dataset.cpw);
         if (v) await copyText(v);
+      } catch(e) { toast(e.message, 'err'); }
+    };
+  });
+  // 上下架下载市场
+  $$('[data-mkt]').forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.mkt, turnOn = b.dataset.on === '1';
+      const row = sharesRows.find(s => s.id === id);
+      if (turnOn && row?.has_password) { toast(t('marketNeedNoPassword'), 'err'); return; }
+      try {
+        await api(`/api/admin/shares/${encodeURIComponent(id)}/market`, { method:'PUT', body: JSON.stringify({ is_market: turnOn }) });
+        toast(turnOn ? t('marketOnToast') : t('marketOffToast'));
+        loadShares();
       } catch(e) { toast(e.message, 'err'); }
     };
   });

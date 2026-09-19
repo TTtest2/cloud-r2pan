@@ -616,6 +616,9 @@ export async function handleAdminApi(
     const downloadName =
       typeof body.download_name === "string" && body.download_name.trim() ? body.download_name.trim() : null;
     const isMarket = body.is_market ? 1 : 0;
+    if (isMarket && passwordHash) {
+      return json({ error: msg(req, "带访问口令的分享不能上架到下载市场", "Password-protected shares cannot be listed on the marketplace") }, 400);
+    }
     const marketTitle =
       typeof body.market_title === "string" && body.market_title.trim() ? body.market_title.trim() : null;
     const marketDesc =
@@ -791,8 +794,14 @@ export async function handleAdminApi(
   if (shareMarketMatch && method === "PUT") {
     const id = shareMarketMatch[1];
     const body = await readJson<{ is_market?: boolean; market_title?: string | null; market_desc?: string | null }>(req);
-    const existing = await env.db.prepare("SELECT id FROM shares WHERE id = ?1").bind(id).first();
+    const existing = await env.db
+      .prepare("SELECT id, password_hash FROM shares WHERE id = ?1")
+      .bind(id)
+      .first<{ id: string; password_hash: string | null }>();
     if (!existing) return json({ error: msg(req, "分享不存在", "Share not found") }, 404);
+    if (body.is_market && existing.password_hash) {
+      return json({ error: msg(req, "带访问口令的分享不能上架到下载市场", "Password-protected shares cannot be listed on the marketplace") }, 400);
+    }
     const isMarket = body.is_market === undefined ? null : (body.is_market ? 1 : 0);
     const mTitle = typeof body.market_title === "string" ? (body.market_title.trim() || null) : null;
     const mDesc = typeof body.market_desc === "string" ? (body.market_desc.trim() || null) : null;
