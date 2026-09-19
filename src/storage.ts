@@ -84,12 +84,17 @@ export function createR2Provider(r2: R2Bucket): StorageProvider {
       return { size: obj.size, etag: obj.httpEtag };
     },
     async get(key, range) {
-      const r2Range = range
-        ? range.length !== undefined
-          ? { offset: range.offset, length: range.length }
-          : { offset: range.offset }
+      // range 必须嵌在 options.range 里。顶层 offset/length 是旧写法，现在的运行时
+      // 会整个忽略它 —— 结果是"206 + Content-Range"却把完整对象推给客户端。
+      const opts: R2GetOptions | undefined = range
+        ? {
+            range:
+              range.length !== undefined
+                ? { offset: range.offset, length: range.length }
+                : { offset: range.offset },
+          }
         : undefined;
-      const obj = (await r2.get(key, r2Range as any)) as any;
+      const obj = (await r2.get(key, opts)) as any;
       if (!obj) return null;
       return {
         body: obj.body as ReadableStream<Uint8Array>,
