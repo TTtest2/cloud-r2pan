@@ -1,196 +1,172 @@
-# cloud-r2pan 架构说明
+# cloud-r2pan
 
-一个 iOS 26 液态玻璃风格的网盘分享系统，基于 **Cloudflare Workers + R2 + D1** 构建。支持文件上传、分享链接（有效期 / 次数 / 访问密码）、流量限额、单 IP 限流与自动封禁、下载日志、登录审计、2FA 两步验证、Turnstile 人机验证，以及中英双语。
+一个 iOS 26 液态玻璃风格的网盘分享系统，跑在 **Cloudflare Workers + R2 + D1** 上。
+功能：上传与文件夹、分享链接（有效期 / 次数上限 / 访问密码）、独立直链、下载市场、
+激活码配额、月度流量限额、单 IP 重复下载拦截与自动封禁、下载日志与全球分布、
+登录审计 + 2FA、Turnstile 人机验证、OAuth 登录下载、WebDAV 挂载、中英双语。
 
----
+**零运行时依赖**：生产代码只用 Worker 原生 API（`crypto.subtle`、`ReadableStream`、
+`Request/Response`），开发依赖只有 `typescript` / `wrangler` / `@cloudflare/workers-types` / `esbuild`。
 
-## 技术选型
-
-| 层 | 技术 | 理由 |
-|---|---|---|
-| 计算 | **Cloudflare Workers** | 边缘计算，毫秒级冷启动，自带全球 CDN，零服务器运维 |
-| 对象存储 | **Cloudflare R2** | 与 Worker 同生态，API 兼容 S3，无出站流量费 |
-| 数据库 | **Cloudflare D1** | Serverless SQLite，支持 SQL 原子更新（用于下载计数扣减），自带索引优化 |
-| 前端 | **原生 HTML + CSS + JavaScript** | 单文件无构建，`fetch` + `FormData` + 动态模板，零运行时开销 |
-| 加密 | **Web Crypto API** | Worker 运行时原生支持（SHA-256、HMAC-SHA256、AES-GCM、HKDF），无第三方依赖 |
-| 人机验证 | **Cloudflare Turnstile** | 与 Workers 同生态，零配置，前端 widget + 后端 siteverify 双重校验 |
-| 2FA | **TOTP (RFC 6238)** | Google Authenticator 标准，Worker 原生 `crypto.subtle` 实现 HMAC-SHA1 |
+英文概览见 [README.en.md](README.en.md)；部署手册见 [DEPLOY.md](DEPLOY.md) 与
+[DEPLOY-S3.md](DEPLOY-S3.md)（用任意 S3 兼容存储替代 R2）。
 
 ---
 
 ## 目录结构
 
 ```
-.
-├── src/                        # Worker 源码（TypeScript）
-│   ├── index.ts               # 入口 & 路由分发
-│   ├── admin.ts               # 管理后台全部 REST API
-│   ├── public.ts              # 公开分享页、下载、密码校验、Turnstile
-│   ├── pages.ts               # HTML 页面 & 错误页渲染
-│   ├── db.ts                  # D1 建表 + 幂等迁移
-│   ├── settings.ts            # 站点配置读写 + 流量统计
-│   ├── auth.ts                # Session 签发校验、IP 识别、登录限流
-│   ├── crypto.ts              # 密码哈希、HMAC、AES-GCM、TOTP、恢复码
-│   ├── ua.ts                  # User-Agent → 浏览器 / 系统
-│   └── i18n.ts                # Accept-Language + 时区 → 中文 / 英文
-├── public/                     # 前端页面（被 Worker 以静态资源形式内嵌）
-│   ├── admin.html             # 管理后台 SPA（登录 + 六个 Tab）
-│   └── share.html             # 分享页（下载 + 密码 + Turnstile）
-└── package.json
+src/
+  index.ts          路由分发、公开端点的限流
+  admin.ts          管理后台全部 REST API（登录 / 2FA / 文件 / 文件夹 / 分享 / 直链 /
+                    激活码 / 封禁 / 日志 / 市场 / 设置 / OAuth Provider）
+  public.ts         访客侧：分享信息、密码校验、下载闸门、直链下载
+  market.ts         下载市场查询（分页 / 搜索 / 排序）
+  webdav.ts         WebDAV 协议（PROPFIND/GET/HEAD/PUT/DELETE/MKCOL/MOVE/COPY）
+  folders.ts        统一目录模型：路径 ↔ folders 树的解析、缓存与写操作
+  storage.ts        存储抽象层：R2 或任意 S3 兼容后端（自带 SigV4 签名）
+  codes.ts          激活码：批次、状态、流量配额扣减
+  oauth.ts          OAuth2 授权码流程原语（多 Provider）
+  oauth_handlers.ts OAuth 路由处理
+  db.ts             D1 建表 + 版本化迁移 + 目录模型迁移
+  settings.ts       站点配置（5 秒内存缓存）与流量统计
+  auth.ts           会话签发校验、IP 识别、限流与登录失败计数
+  crypto.ts         HMAC / AES-GCM / TOTP / PBKDF2 / 恢复码
+  limits.ts         上传体积闸门（单文件上限 + 总配额）
+  pages.ts          页面与错误页渲染、统一安全响应头
+  i18n.ts / ua.ts   语言判定、User-Agent 解析
+public/
+  admin.html        管理后台 SPA（单文件）
+  share.html        分享页
+  market.html       下载市场首页
 ```
-
-**零运行时依赖**：除了 `typescript`、`wrangler`、`@cloudflare/workers-types` 三个开发依赖，生产代码不引入任何 npm 包。全部使用 Worker 原生 API。
 
 ---
 
-## 路由架构
+## 路由
 
-所有请求先进入 `index.ts` 做一次路由分发，路由规则简单清晰：
-
-```
-GET  /admin                → 管理后台 HTML
-ANY  /api/admin/*          → admin.ts 统一处理（鉴权后分发到各子接口）
-GET  /s/:token             → 分享页 HTML
-GET  /s/:token/info        → 分享元信息 JSON（文件大小、状态、Turnstile 状态）
-POST /s/:token/verify      → 密码校验 + Turnstile 校验 → 颁发下载令牌
-GET  /s/:token/download    → 下载主流程（封禁 → 密码 → Turnstile → R2 Range）
-其他                        → 404
-```
-
-管理后台 API 内部再按路径分发到十几个子接口（登录、文件增删、分享增删查改、封禁、日志、2FA、Turnstile、设置）。
-
----
-
-## 数据库 Schema（D1）
-
-共 **7 张表**，首次请求时由 `ensureSchema` 自动创建，旧库有幂等 `ALTER TABLE` 迁移：
-
-| 表 | 主键 | 核心字段 | 用途 |
-|---|---|---|---|
-| `files` | `id` | `key`, `name`, `size`, `mime` | R2 对象的元数据索引 |
-| `shares` | `id` | `file_id`, `expires_at`, `max_downloads`, `download_count`, `revoked`, `password_hash`, `password_cipher` | 分享链接。`password_cipher` 存可逆加密后的密码明文（AES-GCM），用于管理员事后查看 |
-| `download_logs` | `id` | `share_id`, `file_id`, `ip`, `browser`, `os`, `country`, `bytes`, `created_at` | 每次下载一行，用于"单 IP 重复下载检测"和流量统计 |
-| `login_logs` | `id` | `action`, `ip`, `browser`, `os`, `country`, `result`, `reason`, `created_at` | 管理员登录审计（成功 / 失败 / 限流 / 登出 / 恢复码） |
-| `turnstile_visits` | `(ip, day)` | `count` | 每 IP 每天访问次数，复合主键按天自动归零，超过阈值触发 Turnstile |
-| `banned_ips` | `ip` | `reason`, `banned_at`, `expires_at` | 自动封禁 + 到期自动解封 |
-| `settings` | `key` | `value` | 全站 KV 配置（流量限额、Turnstile、2FA 等） |
-| `traffic_stats` | `day` | `bytes`, `downloads` | 每日流量/下载汇总 |
-
-**关键索引**：`idx_shares_file`、`idx_logs_share_ip`、`idx_logs_created`、`idx_login_logs_ip`、`idx_turnstile_day` —— 支撑高频查询在 D1 毫秒级响应。
-
----
-
-## 安全实现亮点
-
-### 管理登录（Session Cookie + 可选 2FA）
-
-```
-POST /api/admin/login { key }
-  ├─ 密码错误 → 写 login_logs → 401
-  ├─ 限流（同 IP 10 次 / 分钟）→ 写 login_logs → 429
-  ├─ 密码正确 + 2FA 未开 → 签发 cookie → 200
-  └─ 密码正确 + 2FA 已开
-      ├─ 无 code → 返回 { need_2fa: true }
-      └─ 带 code
-          ├─ TOTP 6 位码 ✓ → 签发 cookie → 200
-          └─ TOTP ✗ → 尝试恢复码：
-              ├─ Cloudflare Secret totp_recovery → 通过（不消耗）→ 重置 2FA → 200
-              └─ D1 存储的恢复码列表（SHA-256 hash）→ 通过（消耗一个）→ 重置 2FA → 200
-```
-
-- **Session**：`cd_admin` cookie，`HttpOnly + SameSite=Strict`，签名用 HMAC-SHA256
-- **TOTP**：Worker 原生 `crypto.subtle` 实现 HMAC-SHA1（±90 秒窗口，共 3 个时间步）
-- **恢复码**：两种来源——Cloudflare Secret（万能恢复，不消耗）和 D1 存储的 8 个消耗型码（只存 hash）
-- **2FA 关闭时需二次输入 admin key**，防止被一键关掉
-
-### 分享密码（双重存储）
-
-- `password_hash`：加盐 SHA-256，只用于**验证**（不可逆）
-- `password_cipher`：AES-GCM + HKDF 从 admin 密钥派生密钥，用于**事后查看**
-- 分享列表 API 返回 `password_plain`（解密后的明文），前端提供 👁 显示/隐藏 + 📋 一键复制
-
-### 下载授权（HMAC 令牌）
-
-没有密码的分享直接 R2 流式输出；有密码的分享在 `POST /verify` 后颁发一个 `t=expiry.HMAC(admin, "token:expiry")` 的短时令牌（24h），下载时校验签名和过期时间。令牌本身不带密码，防重放能力通过签名 + 过期双重保障。
-
-### Turnstile 人机验证（规则化触发）
-
-- **4 种触发模式**：`off` / `on_share`（打开分享页时）/ `on_download`（点下载时）/ `both`（双重保险）
-- **阈值规则**：每 IP 每天访问分享页超过 N 次后开始弹，默认 5 次，`turnstile_visits` 复合主键 `(ip, day)` 天然按天归零
-- **双重校验**：前端 widget 渲染 + 后端 `siteverify` API 校验 token，缺其一直接 403
-- **凭证三层兜底**：`turnstile_secret`（Cloudflare Secret，必须）→ `turnstile_sitekey`（Cloudflare Secret，可选）→ `sitekey_override`（D1 settings 里填）
-
-### 下载流程（层层拦截）
-
-```
-handleDownload 执行顺序：
-  1. banned_ips 表检查 → 过期自动解封
-  2. 分享有效性 → 状态机（revoked / expired / maxed）
-  3. 原子扣减 download_count（SQL UPDATE ... WHERE download_count < max_downloads）
-  4. 密码校验（需要 HMAC 令牌）
-  5. Turnstile 校验（on_download / both 模式）
-  6. 流量限额（达上限暂停全部下载）
-  7. 单 IP 重复下载检查 + 自动封禁
-  8. R2 流式读取（支持 Range 断点续传）
-  9. waitUntil 异步：写 download_logs + addTraffic
-```
-
-第 3 步是防并发超卖的关键：原实现用旧值拦截后才 +1，并发 20 个请求全过。修复后用 SQL 条件原子完成——`UPDATE ... WHERE download_count < max`，`changes=0` 即达上限。
-
----
-
-## 前端架构
-
-两个 HTML 页面，各自内嵌完整的 JavaScript SPA，零构建、零框架依赖：
-
-### admin.html（管理后台）
-
-单文件 2000+ 行，iOS 26 液态玻璃设计（毛玻璃 + 渐变球形背景 + 上升动画）。六个 Tab：
-
-| Tab | 功能 |
+| 路径 | 说明 |
 |---|---|
-| 概览 | 流量图表（每日 / 每周）、下载 / 分享 / 文件计数、最近活动 |
-| 文件 | 上传（FormData 直传 Worker → R2）、删除（级联删 shares） |
-| 分享 | 列表（文件大小、有效期、密码明文显示、下载状态徽章）、创建、撤销 |
-| 日志 | 下载记录（IP / 浏览器 / OS / 国家 / 流量）、分页、搜索 |
-| 封禁 | 封禁列表 + 解封 |
-| 安全 | 登录审计日志（成功 / 失败 / 登出 / 2FA）、24h 失败告警、分页搜索 |
-| 设置 | 站点标题、流量限额、单 IP 限流、2FA 开关、Turnstile 模式 / 阈值 / SiteKey |
-
-### share.html（公开分享页）
-
-访客看到的下载页。逻辑分支：
-
-- 链接已撤销 / 过期 / 下载满 → 错误页
-- 有密码 → 密码输入框 + 提交后颁发下载令牌
-- Turnstile on_share 模式 + 超过阈值 → 页面加载即渲染 widget
-- Turnstile on_download 模式 → 点下载按钮时才渲染 widget
-- Turnstile both 模式 → 分享页弹一次 + verify 阶段再校验一次
-
-底部有 GitHub Octocat 悬浮按钮（跳转到 `Admin666pro/cloud-oauth2`），iOS safe-area 适配。
+| `GET /` | 按设置跳转到 `/market` 或 `/admin` |
+| `GET /admin` | 管理后台 |
+| `ANY /api/admin/*` | 管理 API（会话 Cookie + 可选 IP 白名单） |
+| `GET /s/:token` | 分享页 |
+| `GET /s/:token/info` | 分享元信息（状态、是否需要密码 / 人机验证） |
+| `POST /s/:token/verify` | 校验访问密码 → 颁发下载令牌（限流 10 次/分钟/IP+token） |
+| `GET /s/:token/download` | 下载主流程 |
+| `GET /d/:id` | 独立直链下载 |
+| `GET /market`、`GET /api/market` | 下载市场页面与查询 |
+| `GET /api/codes/status?code=` | 公开查询激活码余额（限流 30 次/分钟/IP） |
+| `GET /oauth/{providers,start,callback,session}`、`POST /oauth/logout` | OAuth 登录 |
+| `/webdav/*` | WebDAV 挂载点（HTTP Basic Auth） |
 
 ---
 
-## 流量统计
+## 数据模型（D1）
 
-三个来源互相配合：
+`files` `shares` `direct_links` `folders` `download_logs` `login_logs` `traffic_stats`
+`turnstile_visits` `banned_ips` `settings` `oauth_states` `oauth_providers`
+`activation_plans` `activation_codes`
 
-- **实时扣减**：每次下载后 `ctx.waitUntil(addTraffic(bytes))` 更新 `settings.traffic_used_bytes`（原子 + 月度重置）
-- **每日汇总**：`traffic_stats(day)` 表记录每天的 `bytes` 和 `downloads`，概览页图表用
-- **下载日志**：`download_logs` 保留完整明细，用于 IP 重复下载检测
+表结构在首次请求时自动创建，增量迁移由 `settings.migration_version` 记录进度，
+每条迁移只执行一次。
 
-月度自动重置逻辑：读 settings 时发现当前月份 ≠ 存储的 `trafficMonth`，立即重置 `trafficUsedBytes = 0` 并更新月份。
+### 目录树
+
+`folders` 是一棵 `parent_id` 树（`parent_id IS NULL` 为顶层），`files.folder_id` 指向目录，
+同层不重名、跨层可重名（两条 partial unique index）。**路径只是视图**：URL 里的
+`/a/b/c.txt` 由 `src/folders.ts` 现场解析成"目录 id + 文件名"，改名与移动只改一行。
+
+早期版本还留着两套并行的目录事实（`files.path` 存完整路径 + `directories` 路径表）。
+现在它们只作为旧数据被读取：`ensureSchema` 里的 `migrateLegacyFolders` 会把旧目录与
+文件归属搬进新树，操作幂等、可重入，搬完即停（预检查是两条 `LIMIT 1`）。
+
+### 分享与直链
+
+`shares` 是"带闸门的一次性授权"（有效期、次数上限、访问密码、可选上架市场），
+`direct_links` 是"拿了就能下"的独立入口，两者都只引用 `file_id`；
+删除文件时按 `file_id` 连带清掉 `shares`、`direct_links`、`download_logs`。
 
 ---
 
-## 关键设计决策总结
+## 下载闸门（顺序即语义）
 
-| 决策 | 理由 |
-|---|---|
-| **原生 HTML + JS，不用 React/Vue** | Worker 对包大小敏感，SPA 纯 HTML 模板 + fetch 就能搞定，省了构建链路和运行时开销 |
-| **Worker Secret 存一切敏感值** | `admin` / `turnstile_secret` / `turnstile_sitekey` / `totp_recovery` 都走 Secret，D1 只存可公开的配置和加密后的派生数据 |
-| **密码双重存储（hash + cipher）** | hash 用于验证，cipher（AES-GCM）用于管理员事后查看。换 admin secret 后 cipher 会失效，但 hash 仍可验证 |
-| **Session Cookie 而不是 JWT** | Worker 冷启动时间对加密无关，Cookie + SameSite 更适合浏览器场景 |
-| **D1 复合主键做计数器** | `turnstile_visits(ip, day)` 天然按天归零，不需要定时任务清理旧数据 |
-| **并发安全用 SQL 原子 UPDATE** | Worker 无锁，靠 SQL `WHERE download_count < max` 拦截超卖 |
-| **waitUntil 异步写日志** | 下载主流程不等待日志写完就返回响应，降低下载首字节延迟 |
+```
+封禁 IP → 分享存在/未撤销/未过期/次数未满 → 访问密码 → OAuth 登录 → Turnstile
+→ 月度流量限额 → 同 IP 重复下载（可自动封禁）→ 原子扣减次数 → Range 流式输出 → 异步记日志
+```
+
+两处关键设计：
+
+- **扣次排在所有闸门之后**。原子更新
+  `UPDATE shares SET download_count = download_count + 1 WHERE id = ? AND download_count < ?`
+  既保证并发不超卖，又保证被密码/验证码/限流挡掉的请求不会白烧分享人的名额。
+- **日志与流量统计走 `ctx.waitUntil`**，不占用响应时间；流量累加由 SQL 完成
+  （不是 JS 读-改-写），跨月自动清零且幂等。
+
+---
+
+## 安全实现
+
+- **管理会话**：`cd_admin` Cookie = `过期时间.HMAC-SHA256(admin密钥, 过期时间)`，
+  `HttpOnly` + `SameSite=Strict`，HTTPS 下加 `Secure`。登录限流 8 次/分钟/IP，
+  成功与失败都写 `login_logs`；可选 TOTP 两步验证与一次性恢复码。
+- **IP 白名单**：可限制哪些 IP 能进后台（支持 CIDR），这些 IP 同时豁免流量限额。
+- **分享密码**：`shares.password_hash` 用于校验，`password_cipher` 用 admin 密钥
+  AES-GCM（HKDF 派生）加密保存，只为让管理员回看口令。列表接口**不再批量下发口令**，
+  管理员点"显示"时通过 `GET /api/admin/shares/:id/password` 单条解密。
+- **下载令牌**：`?t=过期时间.HMAC(token:过期时间)`，避免把口令反复过网络。
+- **Turnstile**：可按"打开分享页 / 点下载 / 两者"配置触发时机与每 IP 每日阈值。
+- **WebDAV 凭据**：口令以 PBKDF2-SHA256 存储（5 万轮；workerd 对迭代数有 10 万硬上限）。
+  每个 IP 每分钟允许 8 次失败，超限后不再做口令派生；验证通过的凭据在 isolate 内缓存 60 秒。
+  旧格式口令登录成功时就地升级。
+- **OAuth 回跳**：`?redirect=` 只接受站内绝对路径，协议相对地址与外部 URL 一律回落首页。
+- **开放重定向 / XSS**：设置项 `turnstile_sitekey_override` 限定字符集，前端写进
+  HTML 属性时统一转义；所有页面下发时带 CSP、`X-Frame-Options`、`Referrer-Policy` 等。
+- **错误响应**：管理端异常只回一个 `ref`，堆栈留在 Worker 日志里。
+
+---
+
+## 上传限制
+
+`limits.ts` 是管理端上传与 WebDAV PUT 共用的闸门：
+
+- `max_upload_mb`（默认 100，可小不可大 —— Workers 请求体本身就卡在 100 MB）：
+  先用声明体积挡，再给请求体套一层字节计数流挡伪造声明，超限时删掉已写入的对象回滚。
+- `storage_quota_mb`（默认 0 = 不限）：按真实写入量事后判定，超配额则回滚并返回 507。
+
+---
+
+## 开发与校验
+
+需要 Node.js 18+（无其他依赖）。
+
+```bash
+npm install
+npm run typecheck   # tsc --noEmit，严格模式，零错误
+npm test            # 用 esbuild 打包 test/*.ts 后逐个跑，断言驱动、无测试框架
+```
+
+`npm test` 里每个测试文件是一个独立可执行的断言脚本，跑在内存假 D1 上：
+签名对照（`test/s3-signer.ts` 用 `node:crypto` 独立复算 SigV4）、下载闸门顺序、
+目录树解析与迁移、WebDAV 全方法读写、管理端各接口边界。加新测试就是往 `test/` 放一个 `.ts`。
+
+本地跑 Worker：`npx wrangler dev`（需在 `.dev.vars` 里写 `admin=你的密钥`）。
+
+---
+
+## 部署
+
+最小部署（详见 [DEPLOY.md](DEPLOY.md)）：
+
+```bash
+npx wrangler secret put admin          # 必需：会话与加密主密钥
+npx wrangler d1 create cloud-r2pan     # 把返回的 database_id 填进 wrangler.jsonc
+npx wrangler r2 bucket create cloud-r2pan
+npx wrangler deploy
+```
+
+表结构、目录模型迁移、首启设置全部自动完成，不需要手工执行 SQL。
+可选密钥：`turnstile_sitekey` / `turnstile_secret`、`totp_recovery`；
+可选绑定：`analytics`（全球分布，未绑定时降级用 `download_logs`）。
+不用 R2 而用任意 S3 兼容存储（阿里云 OSS / Backblaze / MinIO 等）见 [DEPLOY-S3.md](DEPLOY-S3.md)。

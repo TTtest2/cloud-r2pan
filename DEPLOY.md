@@ -1,5 +1,10 @@
 # 部署步骤
 
+> 本仓库的 `wrangler.jsonc` 已经声明了 `db` / `r2` / `analytics` 三个绑定。
+> 于是有两条路：**(A) 照下面在控制台手工建资源并绑定**（控制台配置优先，不会被覆盖）；
+> **(B) 只把 D1 的 `database_id` 填进 `wrangler.jsonc`，其余交给 `wrangler deploy`**。
+> 二选一即可，别混着来。部署前建议先跑 `npm run typecheck && npm test`。
+
 ## 1. 安装依赖 & 登录
 
 ```bash
