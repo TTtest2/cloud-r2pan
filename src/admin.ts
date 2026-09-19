@@ -1044,6 +1044,7 @@ export async function handleAdminApi(
          WHERE 1=1 ${where}
          ORDER BY dl.created_at DESC`
       )
+      .bind(...bindVals)
       .all();
     const now = Date.now();
     const list = (results ?? []).map((dl: any) => ({
@@ -1888,11 +1889,12 @@ export async function handleAdminApi(
 
   return json({ error: "not_found" }, 404);
   } catch (e: any) {
-    console.error("[handleAdminApi]", e?.stack || e);
+    const ref = randomId(6);
+    console.error(`[handleAdminApi ref=${ref}]`, e?.stack || e);
     return json({
       error: "server_error",
-      message: String(e?.message ?? e),
-      stack: (e?.stack || "").split("\n").slice(0, 8).join("\n"),
+      ref,
+      message: msg(req, `服务端错误（ref=${ref}），请到 Worker 日志查询`, `Server error (ref=${ref}); see Worker logs`),
     }, 500);
   }
 }
