@@ -1645,10 +1645,10 @@ function openShareModal(fileId){
       <div class="tip">${esc(t('downloadNameHint'))}</div>
     </div>
     <div class="field">
-      <label style="display:flex;align-items:center;gap:10px">
-        <input type="checkbox" id="sh-market" style="width:auto">
-        <span>🏪 ${esc(t('shareModalMarket'))}</span>
-      </label>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:13px;font-weight:600;color:var(--text-2)">🏪 ${esc(t('shareModalMarket'))}</span>
+        <label class="switch"><input type="checkbox" id="sh-market"><span class="track"><span class="thumb"></span></span></label>
+      </div>
       <div class="tip">${esc(t('shareModalMarketD'))}</div>
       <div id="sh-market-fields" style="display:none;margin-top:8px">
         <input type="text" id="sh-mkt-title" placeholder="${esc(t('marketTitlePh'))}" maxlength="80" autocomplete="off" style="margin-bottom:8px">
@@ -2593,7 +2593,7 @@ async function loadSettings(){
         <div class="info"><div class="t">🗂️ ${esc(t('webdav'))}</div><div class="d">${esc(t('webdavD'))}</div></div>
         <label class="switch">
           <input type="checkbox" id="st-webdav-on" ${s.webdav_enabled ? 'checked' : ''}>
-          <span class="slider"></span>
+          <span class="track"><span class="thumb"></span></span>
         </label>
       </div>
       <div class="row" style="margin-top:10px">
@@ -2612,7 +2612,7 @@ async function loadSettings(){
         <div class="info"><div class="t">🏪 ${esc(t('homeRedirectMarket'))}</div><div class="d">${esc(t('homeRedirectMarketD'))}</div></div>
         <label class="switch">
           <input type="checkbox" id="st-home-market" ${s.home_redirect_market ? 'checked' : ''}>
-          <span class="slider"></span>
+          <span class="track"><span class="thumb"></span></span>
         </label>
       </div>
       <div class="tip" style="margin-top:8px">${esc(t('homeRedirectMarketHint'))}</div>
@@ -2623,7 +2623,7 @@ async function loadSettings(){
         <div class="info"><div class="t">🎟️ ${esc(t('codesFloatingBtn'))}</div><div class="d">${esc(t('codesFloatingBtnD'))}</div></div>
         <label class="switch">
           <input type="checkbox" id="st-codes-float" ${s.codes_floating_button_enabled !== false ? 'checked' : ''}>
-          <span class="slider"></span>
+          <span class="track"><span class="thumb"></span></span>
         </label>
       </div>
       <div class="row">
