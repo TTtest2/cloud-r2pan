@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { ensureSchema, randomId } from "./db";
 import { generateCodes, makeBatchId, formatCodeStatus, findCodeByString } from "./codes";
 import { getSettings, updateSettings } from "./settings";
-import { checkAdminKey, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import { checkAdminKey, createSession, verifySession, clientIp, rateLimit, requireAdminIp } from "./auth";
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
@@ -130,7 +130,7 @@ export async function handleAdminApi(
   // ── 登录（支持 2FA 两阶段） ──────────────────────────────
   if (path === "/api/admin/login" && method === "POST") {
     const ip = clientIp(req);
-    if (!rateLimitLogin(ip)) {
+    if (!rateLimit(ip, "admin-login")) {
       ctx.waitUntil(writeLoginLog(env, req, "login", "fail", "rate_limited"));
       return json({ error: msg(req, "尝试过于频繁，请稍后再试", "Too many attempts. Please try again later.") }, 429);
     }

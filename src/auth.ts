@@ -43,7 +43,7 @@ export function checkAdminKey(env: Env, input: string): boolean {
 }
 
 /**
- * 登录接口的简易限流（每 isolate 内存计数，防暴力破解）。
+ * 简易限流（每 isolate 内存计数，防暴力破解）。
  *
  * ── Bug #3 修复：Map 永不清理的内存泄漏 ──
  * 原实现每次过期 entry 都 set 新值而非 delete，且永不清理已过期的其他 IP 记录。
@@ -52,30 +52,40 @@ export function checkAdminKey(env: Env, input: string): boolean {
  * 修复：
  *   1. 命中过期 entry → 先 delete 再 set（覆盖也 OK 但 delete 更明确）
  *   2. 每 100 次调用触发一次全量 sweep，清理所有过期 entry
+ *
+ * scope 让互不相干的端点各数各的：管理员登录和"猜某个分享链接的密码"共用计数
+ * 时，NAT 后面正常浏览分享页的人会把管理员挡在登录页外。
  */
 const attempts = new Map<string, { count: number; resetAt: number }>();
 let rateLimitCallCount = 0;
 
-export function rateLimitLogin(ip: string, limit = 8, windowMs = 60_000): boolean {
+export function rateLimit(ip: string, scope: string, limit = 8, windowMs = 60_000): boolean {
+  const key = `${scope}|${ip}`;
   const now = Date.now();
-  const rec = attempts.get(ip);
+  const rec = attempts.get(key);
   if (!rec || rec.resetAt < now) {
     // 过期或首次：先清掉旧 entry（如果有），再创建新的
-    if (rec) attempts.delete(ip);
-    attempts.set(ip, { count: 1, resetAt: now + windowMs });
+    if (rec) attempts.delete(key);
+    attempts.set(key, { count: 1, resetAt: now + windowMs });
   } else {
     rec.count++;
   }
 
   // 每 100 次调用触发一次全量 sweep，防止长期积累的过期 entry 占内存
   if (++rateLimitCallCount % 100 === 0) {
-    for (const [key, val] of attempts) {
-      if (val.resetAt < now) attempts.delete(key);
+    for (const [k, val] of attempts) {
+      if (val.resetAt < now) attempts.delete(k);
     }
   }
 
-  const current = attempts.get(ip)!;
+  const current = attempts.get(key)!;
   return current.count <= limit;
+}
+
+/** 距当前限流窗口重置还有多少秒（用于 Retry-After） */
+export function rateLimitRetryAfter(ip: string, scope: string): number {
+  const rec = attempts.get(`${scope}|${ip}`);
+  return rec && rec.resetAt > Date.now() ? Math.ceil((rec.resetAt - Date.now()) / 1000) : 60;
 }
 
 /** 获取客户端真实 IP（Cloudflare 环境下 CF-Connecting-IP 不可伪造） */
