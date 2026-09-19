@@ -436,7 +436,7 @@ const I18N = {
     directLinkNone: '直链不带密码校验，所以受密码保护的分享不生成直链。',
     preview: '预览分享页',
     // 分享列表
-    sharesTitle: '分享链接', cleanup: '清理失效分享',
+    sharesTitle: '分享链接', cleanup: '清理失效分享', loadMore: '加载更多',
     stActive: '有效', stExpired: '已过期', stRevoked: '已撤销', stMaxed: '已满额',
     revoke: '撤销', noShares: '还没有分享链接，去「文件」页创建一个',
     confirmCleanupT: '清理失效分享', confirmCleanupD: '将删除所有已过期、已撤销、已达下载上限的分享链接。',
@@ -740,7 +740,7 @@ const I18N = {
     directLinkNone: 'Direct links carry no password, so password-protected shares don’t get one.',
     preview: 'Preview',
     // 分享列表
-    sharesTitle: 'Share Links', cleanup: 'Clean up expired',
+    sharesTitle: 'Share Links', cleanup: 'Clean up expired', loadMore: 'Load more',
     stActive: 'Active', stExpired: 'Expired', stRevoked: 'Revoked', stMaxed: 'Maxed out',
     revoke: 'Revoke', noShares: 'No share links yet — create one in Files',
     confirmCleanupT: 'Clean up expired shares', confirmCleanupD: 'This will delete all expired, revoked and maxed-out share links.',
@@ -1666,25 +1666,31 @@ function openShareModal(fileId){
 }
 
 /* ═══════════ 分享 ═══════════ */
-async function loadShares(){
-  const { shares } = await api('/api/admin/shares');
+const SHARES_PAGE = 100;
+let sharesLoaded = 0, sharesTotal = 0, sharesRows = [];
+
+async function loadShares(append = false){
+  const { shares: page, total } = await api(`/api/admin/shares?limit=${SHARES_PAGE}&offset=${append ? sharesLoaded : 0}`);
+  sharesLoaded = (append ? sharesLoaded : 0) + page.length;
+  sharesTotal = total ?? page.length;
+  sharesRows = append ? sharesRows.concat(page) : page;
+  const shares = sharesRows;
   const STATUS_KEY = { active:'stActive', expired:'stExpired', revoked:'stRevoked', maxed:'stMaxed' };
   $('#view').innerHTML = `
     <div class="glass section">
-      <div class="section-title"><h2>🔗 ${esc(t('sharesTitle'))}（${shares.length}）</h2>
+      <div class="section-title"><h2>🔗 ${esc(t('sharesTitle'))}（${sharesTotal || shares.length}）</h2>
         <button class="btn sm" id="cleanup-shares">${esc(t('cleanup'))}</button></div>
       ${shares.length ? `
       <div style="overflow-x:auto"><table class="tbl tbl-shares">
         <thead><tr><th class="name-cell ck-cell">${ckHead}${esc(t('colFile'))}</th><th>${esc(t('colLink'))}</th><th>${esc(t('passwordCol'))}</th><th>${esc(t('colDownloads'))} / ${esc(t('colExpires'))}</th><th>${esc(t('colCreated'))}</th><th>${esc(t('colExpires'))}</th><th>${esc(t('colStatus'))}</th><th style="width:80px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${shares.map(s => {
-          const pw = s.has_password ? (s.password_plain || '') : null;
           return `
           <tr>
             <td class="name-cell ck-cell">${ckbox(s.id)}${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
             <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#2563eb;text-decoration:none">/s/${s.id}</a>${s.direct_url ? `<br><span style="font-size:10px;color:rgba(29,36,51,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" class="dl-link" style="color:#b45309;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button>` : ''}</td>
-            <td class="mono">${pw ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
-              <button class="btn sm" data-pw="${s.id}" data-val="${esc(pw)}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
-              <button class="btn sm" data-cpw="${esc(pw)}" style="padding:2px 8px;font-size:11px">📋</button>` : `<span style="color:var(--text-3)">—</span>`}</td>
+            <td class="mono">${s.has_password ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
+              <button class="btn sm" data-pw="${s.id}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
+              <button class="btn sm" data-cpw="${s.id}" style="padding:2px 8px;font-size:11px">📋</button>` : `<span style="color:var(--text-3)">—</span>`}</td>
             <td class="num">${s.download_count} / ${s.max_downloads ?? '∞'}</td>
             <td class="num">${fmtTime(s.created_at)}</td>
             <td class="num">${s.expires_at ? fmtTime(s.expires_at) : esc(t('forever'))}</td>
@@ -1693,7 +1699,7 @@ async function loadShares(){
           </tr>`;
         }).join('')}
         </tbody>
-      </table></div>` : `<div class="empty"><div class="icon">🔗</div>${esc(t('noShares'))}</div>`}
+      </table></div>${sharesLoaded < sharesTotal ? `<div style="text-align:center;margin-top:10px"><button class="btn sm" id="shares-more">${esc(t('loadMore'))}（${sharesLoaded}/${sharesTotal}）</button></div>` : ''}` : `<div class="empty"><div class="icon">🔗</div>${esc(t('noShares'))}</div>`}
     </div>
     <div class="batch-bar" id="batch-bar">
       <div class="bb-row">
@@ -1726,28 +1732,40 @@ async function loadShares(){
       loadShares();
     } catch(e){ toast(e.message, 'err'); }
   };
-  // 密码显示/隐藏
+  // 口令按需单条获取（列表里不再有明文）
+  const fetchPw = async (id) => {
+    const { password } = await api(`/api/admin/shares/${encodeURIComponent(id)}/password`);
+    return password || '';
+  };
   $$('[data-pw]').forEach(b => {
-    b.onclick = () => {
-      const id = b.dataset.pw, val = b.dataset.val;
-      const el = $(`#pw-${id}`);
-      if(el.textContent === '••••••') {
-        el.textContent = val;
+    b.onclick = async () => {
+      const id = b.dataset.pw, el = $(`#pw-${id}`);
+      if (!el) return;
+      if (el.dataset.shown === '1') { el.textContent = '••••••'; delete el.dataset.shown; b.textContent = '👁'; return; }
+      try {
+        const v = await fetchPw(id);
+        if (!v) { el.textContent = '—'; return; }
+        el.textContent = v;
+        el.dataset.shown = '1';
         b.textContent = '🙈';
-      } else {
-        el.textContent = '••••••';
-        b.textContent = '👁';
-      }
+      } catch(e) { toast(e.message, 'err'); }
     };
   });
   // 复制密码
   $$('[data-cpw]').forEach(b => {
-    b.onclick = () => copyText(b.dataset.cpw);
+    b.onclick = async () => {
+      try {
+        const v = await fetchPw(b.dataset.cpw);
+        if (v) await copyText(v);
+      } catch(e) { toast(e.message, 'err'); }
+    };
   });
   // 复制直链
   $$('[data-cdirect]').forEach(b => {
     b.onclick = () => copyText(b.dataset.cdirect);
   });
+  const more = $('#shares-more');
+  if (more) more.onclick = () => loadShares(true);
 }
 
 /* ═══════════ 记录 ═══════════ */

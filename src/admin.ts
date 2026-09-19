@@ -602,16 +602,20 @@ export async function handleAdminApi(
     return json({ ok: true, id, url: `/s/${id}`, direct_url: directUrl }, 201);
   }
 
-  // ── 分享列表 ──────────────────────────────────────
+  // ── 分享列表（分页；口令只在显式点开时单独取，不随列表批量下发） ──
   if (path === "/api/admin/shares" && method === "GET") {
+    const sp = new URL(req.url).searchParams;
+    const limit = Math.min(500, Math.max(1, Number(sp.get("limit")) || 100));
+    const offset = Math.max(0, Number(sp.get("offset")) || 0);
+    const totalRow = await env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>();
     const { results } = await env.db.prepare(
       `SELECT s.id, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked,
-              s.password_hash, s.password_cipher, s.download_name, s.direct_id,
+              s.password_hash, s.download_name, s.direct_id,
               s.is_market, s.market_views, s.market_title, s.market_desc,
               f.name AS file_name, f.size AS file_size, f.mime AS file_mime
        FROM shares s JOIN files f ON f.id = s.file_id
-       ORDER BY s.created_at DESC`
-    ).all();
+       ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2`
+    ).bind(limit, offset).all();
     const now = Date.now();
     // 这个功能上线前创建的分享没有直链，这里按需补建（有密码的不补：直链等于绕过密码）
     const backfill = (results ?? []).filter((s: any) =>
@@ -626,26 +630,35 @@ export async function handleAdminApi(
       });
       await env.db.batch(stmts);
     }
-    // 并行解密所有密码明文
-    const shares = await Promise.all(
-      (results ?? []).map(async (s: any) => ({
-        ...s,
-        has_password: !!s.password_hash,
-        password_plain: s.password_cipher ? await decryptSecret(s.password_cipher, env.admin) : null,
-        password_hash: undefined,
-        password_cipher: undefined,
-        url: `/s/${s.id}`,
-        direct_url: s.direct_id ? `/d/${s.direct_id}` : null,
-        status: s.revoked
-          ? "revoked"
-          : s.expires_at && s.expires_at < now
-            ? "expired"
-            : s.max_downloads && s.download_count >= s.max_downloads
-              ? "maxed"
-              : "active",
-      }))
-    );
-    return json({ shares });
+    const shares = (results ?? []).map((s: any) => ({
+      ...s,
+      has_password: !!s.password_hash,
+      password_hash: undefined,
+      url: `/s/${s.id}`,
+      direct_url: s.direct_id ? `/d/${s.direct_id}` : null,
+      status: s.revoked
+        ? "revoked"
+        : s.expires_at && s.expires_at < now
+          ? "expired"
+          : s.max_downloads && s.download_count >= s.max_downloads
+            ? "maxed"
+            : "active",
+    }));
+    return json({ shares, total: totalRow?.c ?? 0, limit, offset });
+  }
+
+  // ── 查看单条分享的访问口令（管理员主动点开时才解密） ──
+  const sharePwMatch = /^\/api\/admin\/shares\/([^/]+)\/password$/.exec(path);
+  if (sharePwMatch && method === "GET") {
+    const shareId = decodeURIComponent(sharePwMatch[1]);
+    const row = await env.db
+      .prepare("SELECT password_cipher FROM shares WHERE id = ?1")
+      .bind(shareId)
+      .first<{ password_cipher: string | null }>();
+    if (!row) return json({ error: msg(req, "分享不存在", "Share not found") }, 404);
+    if (!row.password_cipher) return json({ password: null });
+    const password = await decryptSecret(row.password_cipher, env.admin);
+    return json({ password: password ?? "" });
   }
 
   // ── 清理失效分享（过期 / 已撤销 / 达上限） + 孤儿 files + 孤儿 R2 对象 ──
