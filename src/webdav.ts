@@ -10,10 +10,11 @@
  *   DELETE    —— 删除文件或空目录（非空目录递归删除）
  *   MKCOL     —— 创建目录
  *   MOVE      —— 移动 / 重命名 文件或目录
- *   COPY      —— 复制文件或目录
+ *   COPY      —— 复制文件（目录复制未实现，返回 501）
  *
  * 认证：HTTP Basic Auth，用户名密码在管理后台设置（settings.webdav_username / webdav_password_hash）
- * 存储：复用 StorageProvider（R2 / S3），文件元数据存 D1 files 表，目录存 directories 表
+ * 存储：对象走 StorageProvider（R2 / S3），元数据走 D1 —— 文件行存 files（folder_id 指向目录），
+ *      目录是 folders 的 parent_id 树；URL 里的路径由 src/folders.ts 现场解析，不是存储事实。
  */
 
 import type { Env } from "./types";
@@ -21,6 +22,17 @@ import { getSettings } from "./settings";
 import { sha256Hex, safeEqual, randomHex } from "./crypto";
 import { getStorageProvider as storage } from "./storage";
 import { randomId } from "./db";
+import {
+  getFolderTree,
+  resolveFolderPath,
+  createFolder,
+  relocateFolder,
+  deleteFoldersStmt,
+  invalidateFolderTree,
+  joinPath,
+  type FolderNode,
+  type FolderRef,
+} from "./folders";
 
 /* ═══════════ 工具函数 ═══════════ */
 
@@ -99,7 +111,7 @@ async function checkWebDAVAuth(req: Request, env: Env): Promise<boolean> {
   return safeEqual(want, got);
 }
 
-/* ═══════════ 数据库辅助查询 ═══════════ */
+/* ═══════════ 目录模型（folders + files.folder_id） ═══════════ */
 
 interface DBFile {
   id: string;
@@ -107,73 +119,68 @@ interface DBFile {
   name: string;
   size: number;
   mime: string;
-  path: string;
+  folder_id: string | null;
   uploaded_at: number;
 }
 
-/** 查找一个文件（精确 path + name） */
-async function findFile(env: Env, dir: string, name: string): Promise<DBFile | null> {
-  const path = dir === "/" ? `/${name}` : `${dir}/${name}`;
-  return await env.db
-    .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path = ?1 AND name = ?2")
-    .bind(path, name)
-    .first<DBFile>();
+const FILE_COLUMNS = "id, key, name, size, mime, folder_id, uploaded_at";
+
+/** 一个 WebDAV 路径的解析结果。root 与 missing 必须区分，否则写错路径就能列出整站 */
+type Loc =
+  | { kind: "root" }
+  | { kind: "dir"; node: FolderNode }
+  | { kind: "file"; file: DBFile; parentId: FolderRef; path: string }
+  | { kind: "missing" };
+
+/** 拆成"父路径 + 名称"，父路径永远是 /xxx 形式（根是 "/"） */
+function splitPath(path: string): { parentPath: string; name: string } {
+  const last = path.lastIndexOf("/");
+  return {
+    parentPath: last <= 0 ? "/" : path.slice(0, last),
+    name: path.slice(last + 1),
+  };
 }
 
-/** 查找目录是否存在（directories 表 或 有文件直接在其中） */
-async function directoryExists(env: Env, path: string): Promise<boolean> {
-  path = path === "/" ? "/" : path.replace(/\/$/, "");
-  if (path === "/") return true; // 根目录永远存在
-  // directories 表
-  const dir: any = await env.db.prepare("SELECT 1 FROM directories WHERE path = ?1").bind(path).first();
-  if (dir) return true;
-  // 有文件在这个目录下（files.path 是完整路径，所以前缀匹配）
-  const deeper: any = await env.db
-    .prepare("SELECT 1 FROM files WHERE path LIKE ?1 LIMIT 1")
-    .bind(path + "/%")
-    .first();
-  return !!deeper;
+/** 同一目录下的同名文件（partial unique index 管目录，文件靠这个查询判重） */
+async function findFileByName(env: Env, parentId: FolderRef, name: string): Promise<DBFile | null> {
+  const stmt = parentId === null
+    ? env.db.prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE folder_id IS NULL AND name = ?1`).bind(name)
+    : env.db.prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE folder_id = ?1 AND name = ?2`).bind(parentId, name);
+  return await stmt.first<DBFile>();
 }
 
-/** 列出目录的直接子项（文件 + 子目录） */
-async function listDirChildren(env: Env, path: string): Promise<{ files: DBFile[]; dirs: string[] }> {
-  path = path === "/" ? "" : path; // 查询时根目录用 "" 前缀
-  const childPrefix = path === "" ? "/" : path + "/";
-  /** 去掉父目录前缀得到相对路径；不属于该目录时返回 "" */
-  const relativeName = (fullPath: string) =>
-    fullPath.startsWith(childPrefix) ? fullPath.slice(childPrefix.length) : "";
+async function locate(env: Env, path: string): Promise<Loc> {
+  const tree = await getFolderTree(env);
+  const dirId = tree.resolve(path);
+  if (dirId === null) return { kind: "root" };
+  const dirNode = dirId === undefined ? undefined : tree.get(dirId);
+  if (dirNode) return { kind: "dir", node: dirNode }; // 目录优先：同名文件行属于脏数据
 
-  // 1. 直接子文件：path = 父路径 + "/" + name（精确）
-  const { results: files } = await env.db
-    .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path LIKE ?1")
-    .bind(childPrefix + "%")
+  const { parentPath, name } = splitPath(path);
+  if (!name) return { kind: "missing" };
+  const parentId = tree.resolve(parentPath);
+  if (parentId === undefined) return { kind: "missing" };
+  const file = await findFileByName(env, parentId, name);
+  return file ? { kind: "file", file, parentId, path } : { kind: "missing" };
+}
+
+/** 取若干目录（含根）里的文件；一次查询，避免 Depth: infinity 时按目录往返 */
+async function filesInFolders(env: Env, ids: FolderRef[]): Promise<DBFile[]> {
+  if (!ids.length) return [];
+  const conds: string[] = [];
+  const binds: unknown[] = [];
+  for (const id of ids) {
+    if (id === null) conds.push("folder_id IS NULL");
+    else {
+      binds.push(id);
+      conds.push(`folder_id = ?${binds.length}`);
+    }
+  }
+  const { results } = await env.db
+    .prepare(`SELECT ${FILE_COLUMNS} FROM files WHERE ${conds.join(" OR ")} ORDER BY name`)
+    .bind(...binds)
     .all<DBFile>();
-
-  const directFiles: DBFile[] = [];
-  const subDirSet = new Set<string>();
-
-  for (const f of files) {
-    const rest = relativeName(f.path);
-    if (!rest) continue;
-    const slashIdx = rest.indexOf("/");
-    if (slashIdx < 0) directFiles.push(f);
-    else subDirSet.add(childPrefix + rest.slice(0, slashIdx));
-  }
-
-  // 2. directories 表里显式创建的子目录
-  const { results: explicitDirs } = await env.db
-    .prepare("SELECT path FROM directories WHERE path LIKE ?1 AND path != ?2")
-    .bind(childPrefix + "%", path === "" ? "/" : path)
-    .all<{ path: string }>();
-
-  for (const d of explicitDirs) {
-    const rest = relativeName(d.path);
-    if (!rest) continue;
-    const slashIdx = rest.indexOf("/");
-    subDirSet.add(slashIdx < 0 ? d.path : childPrefix + rest.slice(0, slashIdx));
-  }
-
-  return { files: directFiles, dirs: Array.from(subDirSet).sort() };
+  return results ?? [];
 }
 
 /* ═══════════ PROPFIND XML 生成 ═══════════ */
@@ -216,10 +223,11 @@ function filePropstat(file: DBFile, href: string): string {
   </response>`;
 }
 
-/** 目录自身的 propstat */
-function dirPropstat(path: string, baseUrl: string): string {
+/** 目录自身的 propstat（根目录没有对应行，创建时间缺省为当前） */
+function dirPropstat(path: string, baseUrl: string, createdAt?: number): string {
   const href = buildHref(baseUrl, path, true);
   const displayName = path === "/" ? "/" : path.split("/").filter(Boolean).pop() || "";
+  const stamp = createdAt ?? Date.now();
   return `
   <response>
     <href>${escapeXml(href)}</href>
@@ -232,8 +240,8 @@ function dirPropstat(path: string, baseUrl: string): string {
     <propstat>
       <prop>
         <getcontenttype>httpd/unix-directory</getcontenttype>
-        <getlastmodified>${tsToRfc1123(Date.now())}</getlastmodified>
-        <creationdate>${new Date().toISOString()}</creationdate>
+        <getlastmodified>${tsToRfc1123(stamp)}</getlastmodified>
+        <creationdate>${new Date(stamp).toISOString()}</creationdate>
         <displayname>${escapeXml(displayName)}</displayname>
       </prop>
       <status>HTTP/1.1 200 OK</status>
@@ -325,79 +333,63 @@ async function handlePropfind(
 ): Promise<Response> {
   const depth = req.headers.get("depth") || "1"; // 0 / 1 / infinity
   const baseUrl = url.origin;
+  const xmlHeaders = { "Content-Type": "application/xml; charset=utf-8" };
 
-  // files.path 存的是文件完整路径，所以按 path 精确查一次即可判定"是文件"
-  const file = internalPath !== "/"
-    ? await env.db
-        .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path = ?1")
-        .bind(internalPath)
-        .first<DBFile>()
-    : null;
+  const loc = await locate(env, internalPath);
+  if (loc.kind === "missing") return new Response("Not Found", { status: 404 });
 
-  if (file) {
-    // 这是个文件
-    const href = buildHref(baseUrl, internalPath, false);
-    const body = multistatusXML([filePropstat(file, href)]);
-    return new Response(body, {
-      status: 207,
-      headers: { "Content-Type": "application/xml; charset=utf-8" },
-    });
+  if (loc.kind === "file") {
+    const body = multistatusXML([filePropstat(loc.file, buildHref(baseUrl, loc.path, false))]);
+    return new Response(body, { status: 207, headers: xmlHeaders });
   }
 
-  // 应该是目录
-  if (!(await directoryExists(env, internalPath))) {
-    return new Response("Not Found", { status: 404 });
-  }
+  const folderId: FolderRef = loc.kind === "root" ? null : loc.node.id;
+  const selfCreated = loc.kind === "dir" ? loc.node.created_at : undefined;
 
   // Depth: 0 —— 只返回目录自身
   if (depth === "0") {
-    const body = multistatusXML([dirPropstat(internalPath, baseUrl)]);
-    return new Response(body, {
-      status: 207,
-      headers: { "Content-Type": "application/xml; charset=utf-8" },
-    });
+    const body = multistatusXML([dirPropstat(internalPath, baseUrl, selfCreated)]);
+    return new Response(body, { status: 207, headers: xmlHeaders });
   }
 
-  // Depth: 1 或 infinity —— 返回目录自身 + 子项
-  const responses: string[] = [dirPropstat(internalPath, baseUrl)];
+  const tree = await getFolderTree(env);
+  const responses: string[] = [dirPropstat(internalPath, baseUrl, selfCreated)];
 
-  if (depth === "1") {
-    const { files, dirs } = await listDirChildren(env, internalPath);
-    for (const d of dirs) {
-      responses.push(dirPropstat(d, baseUrl));
+  if (depth === "infinity") {
+    // 子树 id 全在内存里算，再一次性把涉及目录的文件捞回来
+    const ids: FolderRef[] = [];
+    if (folderId === null) {
+      ids.push(null);
+      for (const root of tree.roots()) ids.push(...tree.subtreeIds(root.id));
+    } else {
+      ids.push(...tree.subtreeIds(folderId));
     }
-    for (const f of files) {
-      const href = buildHref(baseUrl, f.path, false);
-      responses.push(filePropstat(f, href));
+    const pathByFolder = new Map<FolderRef, string>();
+    for (const id of ids) {
+      if (id === null) continue;
+      const p = id === folderId ? internalPath : tree.pathOf(id);
+      if (p) pathByFolder.set(id, p);
+    }
+    for (const id of ids) {
+      if (id === null || id === folderId) continue; // 根与自身已报过
+      const p = pathByFolder.get(id);
+      if (p) responses.push(dirPropstat(p, baseUrl, tree.get(id)?.created_at));
+    }
+    for (const f of await filesInFolders(env, ids)) {
+      const parentPath = f.folder_id === null ? "/" : pathByFolder.get(f.folder_id) ?? internalPath;
+      responses.push(filePropstat(f, buildHref(baseUrl, joinPath(parentPath, f.name), false)));
     }
   } else {
-    // infinity —— 递归列出所有
-    await collectAll(env, internalPath, baseUrl, responses);
+    // Depth: 1 —— 直接子目录（内存树）+ 直接子文件（一条按 folder_id 的精确查询）
+    for (const d of tree.childrenOf(folderId)) {
+      responses.push(dirPropstat(joinPath(internalPath, d.name), baseUrl, d.created_at));
+    }
+    for (const f of await filesInFolders(env, [folderId])) {
+      responses.push(filePropstat(f, buildHref(baseUrl, joinPath(internalPath, f.name), false)));
+    }
   }
 
-  const body = multistatusXML(responses);
-  return new Response(body, {
-    status: 207,
-    headers: { "Content-Type": "application/xml; charset=utf-8" },
-  });
-}
-
-/** 递归收集目录下所有子项（Depth: infinity） */
-async function collectAll(
-  env: Env,
-  path: string,
-  baseUrl: string,
-  responses: string[]
-): Promise<void> {
-  const { files, dirs } = await listDirChildren(env, path);
-  for (const d of dirs) {
-    responses.push(dirPropstat(d, baseUrl));
-    await collectAll(env, d, baseUrl, responses);
-  }
-  for (const f of files) {
-    const href = buildHref(baseUrl, f.path, false);
-    responses.push(filePropstat(f, href));
-  }
+  return new Response(multistatusXML(responses), { status: 207, headers: xmlHeaders });
 }
 
 /* ═══════════ GET / HEAD ═══════════ */
@@ -408,20 +400,10 @@ async function handleWebDavGet(
   internalPath: string,
   headOnly: boolean
 ): Promise<Response> {
-  // 拆分为 dir + name
-  const lastSlash = internalPath.lastIndexOf("/");
-  const dir = lastSlash <= 0 ? "/" : internalPath.slice(0, lastSlash);
-  const name = internalPath.slice(lastSlash + 1);
-
-  if (!name) {
-    // 目录 —— 返回目录列表或错误
-    return new Response("Not a file", { status: 409 });
-  }
-
-  const file = await findFile(env, dir, name);
-  if (!file) {
-    return new Response("Not Found", { status: 404 });
-  }
+  const loc = await locate(env, internalPath);
+  if (loc.kind === "missing") return new Response("Not Found", { status: 404 });
+  if (loc.kind !== "file") return new Response("Not a file", { status: 409 });
+  const file = loc.file;
 
   const st = await storage(env);
   const obj = await st.head(file.key);
@@ -482,19 +464,23 @@ async function handleWebDavPut(
   env: Env,
   internalPath: string
 ): Promise<Response> {
-  // 拆分为 dir + name
-  const lastSlash = internalPath.lastIndexOf("/");
-  const dir = lastSlash <= 0 ? "/" : internalPath.slice(0, lastSlash);
-  const name = internalPath.slice(lastSlash + 1);
-
+  const { parentPath, name } = splitPath(internalPath);
   if (!name) {
     return new Response("No file name", { status: 400 });
   }
 
-  // 父目录必须存在
-  if (!(await directoryExists(env, dir))) {
+  // 父目录必须存在（WebDAV 不自动创建中间目录）
+  const parentId = await resolveFolderPath(env, parentPath);
+  if (parentId === undefined) {
     return new Response("Conflict: parent directory does not exist", { status: 409 });
   }
+
+  // 目标已存在：集合不能被文件覆盖；同名文件则是覆盖上传
+  const target = await locate(env, internalPath);
+  if (target.kind === "dir" || target.kind === "root") {
+    return new Response("Method Not Allowed: collection exists here", { status: 405 });
+  }
+  const existing = target.kind === "file" ? target.file : null;
 
   const mime = req.headers.get("content-type") || "application/octet-stream";
   const st = await storage(env);
@@ -516,36 +502,38 @@ async function handleWebDavPut(
     return new Response(`Storage error: ${err?.message || err}`, { status: 502 });
   }
 
-  // 检查是否已存在同名文件（覆盖）
-  const existing = await findFile(env, dir, name);
+  // 覆盖上传：先换行再删旧对象，中途失败最多留一个孤儿对象
   if (existing) {
-    // 删除旧文件 + 关联的 shares
     try {
-      await env.db.batch([
-        env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(existing.id),
-        env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(existing.id),
-        env.db.prepare("DELETE FROM files WHERE id = ?1").bind(existing.id),
-      ]);
-      await st.delete(existing.key).catch(() => {});
+      await env.db.batch(fileDeleteStmts(env, existing.id));
     } catch { /* 忽略清理失败 */ }
   }
 
-  // 插入新文件记录
-  const fullPath = dir === "/" ? `/${name}` : `${dir}/${name}`;
   try {
     await env.db.prepare(
-      "INSERT INTO files(id, key, name, size, mime, path, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-    ).bind(id, key, name, size, mime, fullPath, now).run();
+      "INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+    ).bind(id, key, name, size, mime, now, parentId).run();
   } catch (err: any) {
     // D1 失败 —— 清理 storage
     await st.delete(key).catch(() => {});
     return new Response(`DB error: ${err?.message || err}`, { status: 502 });
   }
+  if (existing) await st.delete(existing.key).catch(() => {});
 
-  return new Response("", {
+  return new Response(null, {
     status: existing ? 204 : 201,
     headers: { "ETag": `"${id}"` },
   });
+}
+
+/** 删一个文件行需要连带清掉的引用（顺序无关，同一个 batch 内一事务） */
+function fileDeleteStmts(env: Env, fileId: string) {
+  return [
+    env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
+    env.db.prepare("DELETE FROM direct_links WHERE file_id = ?1").bind(fileId),
+    env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
+    env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
+  ];
 }
 
 /* ═══════════ DELETE ═══════════ */
@@ -555,51 +543,28 @@ async function handleWebDavDelete(env: Env, internalPath: string): Promise<Respo
     return new Response("Cannot delete root", { status: 403 });
   }
 
-  const lastSlash = internalPath.lastIndexOf("/");
-  const dir = lastSlash <= 0 ? "/" : internalPath.slice(0, lastSlash);
-  const name = internalPath.slice(lastSlash + 1);
+  const loc = await locate(env, internalPath);
+  if (loc.kind === "missing") return new Response("Not Found", { status: 404 });
 
-  // 1. 先看是不是文件
-  if (name) {
-    const file = await findFile(env, dir, name);
-    if (file) {
-      const st = await storage(env);
-      await env.db.batch([
-        env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(file.id),
-        env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(file.id),
-        env.db.prepare("DELETE FROM files WHERE id = ?1").bind(file.id),
-      ]);
-      await st.delete(file.key).catch(() => {});
-      return new Response("", { status: 204 });
-    }
+  const st = await storage(env);
+
+  if (loc.kind === "file") {
+    await env.db.batch(fileDeleteStmts(env, loc.file.id));
+    await st.delete(loc.file.key).catch(() => {});
+    return new Response(null, { status: 204 });
   }
 
-  // 2. 看看是不是目录
-  if (await directoryExists(env, internalPath)) {
-    // 递归删除目录下所有文件
-    const st = await storage(env);
-    const likePattern = internalPath + "/%";
-    const { results: files } = await env.db
-      .prepare("SELECT id, key FROM files WHERE path LIKE ?1")
-      .bind(likePattern)
-      .all<{ id: string; key: string }>();
-
-    for (const f of files) {
-      await env.db.batch([
-        env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(f.id),
-        env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(f.id),
-        env.db.prepare("DELETE FROM files WHERE id = ?1").bind(f.id),
-      ]);
-      await st.delete(f.key).catch(() => {});
-    }
-
-    // 删除目录本身（directories 表）
-    await env.db.prepare("DELETE FROM directories WHERE path = ?1").bind(internalPath).run();
-
-    return new Response("", { status: 204 });
-  }
-
-  return new Response("Not Found", { status: 404 });
+  // 目录：连整棵子树一起删（沿用原有语义 —— 非空目录递归删除）
+  if (loc.kind !== "dir") return new Response("Cannot delete root", { status: 403 });
+  const tree = await getFolderTree(env);
+  const ids = tree.subtreeIds(loc.node.id);
+  const files = await filesInFolders(env, ids);
+  const stmts = files.flatMap((f) => fileDeleteStmts(env, f.id));
+  stmts.push(...deleteFoldersStmt(env, ids));
+  await env.db.batch(stmts);
+  invalidateFolderTree();
+  for (const f of files) await st.delete(f.key).catch(() => {});
+  return new Response(null, { status: 204 });
 }
 
 /* ═══════════ MKCOL ═══════════ */
@@ -609,32 +574,27 @@ async function handleWebDavMkcol(env: Env, internalPath: string): Promise<Respon
     return new Response("Root exists", { status: 200 });
   }
 
+  const { parentPath, name } = splitPath(internalPath);
+  if (!name) return new Response("Bad request", { status: 400 });
+
   // 父目录必须存在
-  const parent = internalPath.slice(0, internalPath.lastIndexOf("/")) || "/";
-  if (!(await directoryExists(env, parent))) {
+  const parentId = await resolveFolderPath(env, parentPath);
+  if (parentId === undefined) {
     return new Response("Conflict: parent does not exist", { status: 409 });
   }
 
-  // 目标不能是已存在的文件
-  const lastSlash = internalPath.lastIndexOf("/");
-  const pdir = lastSlash <= 0 ? "/" : internalPath.slice(0, lastSlash);
-  const pname = internalPath.slice(lastSlash + 1);
-  if (pname) {
-    const existingFile = await findFile(env, pdir, pname);
-    if (existingFile) {
-      return new Response("Method Not Allowed: file exists here", { status: 405 });
-    }
+  const target = await locate(env, internalPath);
+  if (target.kind === "file") {
+    return new Response("Method Not Allowed: file exists here", { status: 405 });
+  }
+  // 同名集合已存在 —— 沿用宽松的 201：部分客户端每次挂载都会对已有目录再 MKCOL 一次
+  if (target.kind === "dir") {
+    return new Response("", { status: 201 });
   }
 
-  // 已经存在也返回 201（WebDAV 规范）
-  try {
-    await env.db.prepare(
-      "INSERT INTO directories(path, created_at) VALUES(?1, ?2) ON CONFLICT(path) DO NOTHING"
-    ).bind(internalPath, Date.now()).run();
-  } catch (err: any) {
-    return new Response(`DB error: ${err?.message || err}`, { status: 502 });
+  if (!(await createFolder(env, parentId, name))) {
+    return new Response("Conflict: could not create collection", { status: 409 });
   }
-
   return new Response("", { status: 201 });
 }
 
@@ -662,40 +622,50 @@ async function handleWebDavMove(
 
   const overwrite = (req.headers.get("overwrite") || "T").toUpperCase() === "T";
 
-  // 检查源是否存在
-  const srcExists = await directoryExists(env, internalPath);
-  const srcFile = await pathIsFile(env, internalPath);
-  if (!srcExists && !srcFile) {
-    return new Response("Not Found", { status: 404 });
+  const src = await locate(env, internalPath);
+  if (src.kind === "missing") return new Response("Not Found", { status: 404 });
+
+  const { parentPath: destParentPath, name: destName } = splitPath(destPath);
+  if (!destName) return new Response("Bad request", { status: 400 });
+
+  const destParentId = await resolveFolderPath(env, destParentPath);
+  if (destParentId === undefined) return new Response("Conflict", { status: 409 });
+
+  if (src.kind === "root") return new Response("Forbidden: cannot move root", { status: 403 });
+
+  if (src.kind === "dir") {
+    // 目录不能移进自己的子树，也不能移到自己身上。必须在"删除已存在目标"之前拦下：
+    // 否则目标是源的子孙时，会先把要保数据的那一份删掉。
+    const srcPath = (await getFolderTree(env)).pathOf(src.node.id) ?? internalPath;
+    if (destPath === srcPath || destPath.startsWith(srcPath + "/")) {
+      return new Response("Forbidden: cannot move a collection into itself", { status: 403 });
+    }
   }
 
-  // 目标父目录必须存在
-  const destParent = destPath.slice(0, destPath.lastIndexOf("/")) || "/";
-  if (!(await directoryExists(env, destParent))) {
-    return new Response("Conflict", { status: 409 });
-  }
-
-  // 检查目标是否存在
-  const destExists = await directoryExists(env, destPath);
-  const destFile = await pathIsFile(env, destPath);
-  if ((destExists || destFile) && !overwrite) {
+  const dest = await locate(env, destPath);
+  const destExists = dest.kind === "file" || dest.kind === "dir";
+  if (destExists && !overwrite) {
     return new Response("Precondition Failed: destination exists", { status: 412 });
   }
-
-  // 如果目标已存在，先删除
-  if (destExists || destFile) {
-    await handleWebDavDelete(env, destPath);
+  if (destExists) {
+    const removed = await handleWebDavDelete(env, destPath);
+    if (removed.status !== 204) return removed;
   }
 
-  if (srcFile) {
-    // 移动文件
-    await moveFile(env, internalPath, destPath);
+  if (src.kind === "file") {
+    await env.db
+      .prepare("UPDATE files SET folder_id = ?1, name = ?2 WHERE id = ?3")
+      .bind(destParentId, destName, src.file.id)
+      .run();
   } else {
-    // 移动目录（递归更新 path）
-    await moveDirectory(env, internalPath, destPath);
+    const moved = await relocateFolder(env, src.node.id, { parentId: destParentId, name: destName });
+    if (!moved.ok) {
+      const status = moved.error === "cycle" ? 403 : moved.error === "not_found" ? 404 : 409;
+      return new Response(`Conflict: ${moved.error}`, { status });
+    }
   }
 
-  return new Response("", { status: destExists || destFile ? 204 : 201 });
+  return new Response(null, { status: destExists ? 204 : 201 });
 }
 
 /* ═══════════ COPY ═══════════ */
@@ -721,22 +691,24 @@ async function handleWebDavCopy(
 
   const overwrite = (req.headers.get("overwrite") || "T").toUpperCase() === "T";
 
-  const srcFile = await pathIsFile(env, internalPath);
-  if (!srcFile) {
-    return new Response("Only file copy supported", { status: 501 });
-  }
+  const src = await locate(env, internalPath);
+  if (src.kind === "missing") return new Response("Not Found", { status: 404 });
+  if (src.kind !== "file") return new Response("Only file copy supported", { status: 501 });
+  const srcFile = src.file;
 
-  const destParent = destPath.slice(0, destPath.lastIndexOf("/")) || "/";
-  if (!(await directoryExists(env, destParent))) {
-    return new Response("Conflict", { status: 409 });
-  }
+  const { parentPath: destParentPath, name: destName } = splitPath(destPath);
+  if (!destName) return new Response("Bad request", { status: 400 });
 
-  const destFile = await pathIsFile(env, destPath);
-  if (destFile && !overwrite) {
+  const destParentId = await resolveFolderPath(env, destParentPath);
+  if (destParentId === undefined) return new Response("Conflict", { status: 409 });
+
+  const dest = await locate(env, destPath);
+  if (dest.kind !== "missing" && !overwrite) {
     return new Response("Precondition Failed", { status: 412 });
   }
-  if (destFile) {
-    await handleWebDavDelete(env, destPath);
+  if (dest.kind === "file" || dest.kind === "dir") {
+    const removed = await handleWebDavDelete(env, destPath);
+    if (removed.status !== 204) return removed;
   }
 
   const st = await storage(env);
@@ -745,87 +717,21 @@ async function handleWebDavCopy(
 
   const newId = randomId(14);
   const newKey = `files/${newId}`;
-  const newName = destPath.split("/").filter(Boolean).pop() || srcFile.name;
 
-  await st.put(newKey, srcObj.body, { contentType: srcFile.mime, contentLength: srcObj.size });
+  try {
+    await st.put(newKey, srcObj.body, { contentType: srcFile.mime, contentLength: srcObj.size });
+  } catch (err: any) {
+    return new Response(`Storage error: ${err?.message || err}`, { status: 502 });
+  }
 
-  await env.db.prepare(
-    "INSERT INTO files(id, key, name, size, mime, path, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-  ).bind(newId, newKey, newName, srcFile.size, srcFile.mime, destPath, Date.now()).run();
+  try {
+    await env.db.prepare(
+      "INSERT INTO files(id, key, name, size, mime, uploaded_at, folder_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+    ).bind(newId, newKey, destName, srcFile.size, srcFile.mime, Date.now(), destParentId).run();
+  } catch (err: any) {
+    await st.delete(newKey).catch(() => {});
+    return new Response(`DB error: ${err?.message || err}`, { status: 502 });
+  }
 
   return new Response("", { status: 201 });
-}
-
-/* ═══════════ 辅助：判断路径是否是文件 ═══════════ */
-
-async function pathIsFile(env: Env, p: string): Promise<DBFile | null> {
-  const lastSlash = p.lastIndexOf("/");
-  const dir = lastSlash <= 0 ? "/" : p.slice(0, lastSlash);
-  const name = p.slice(lastSlash + 1);
-  if (!name) return null;
-  return await findFile(env, dir, name);
-}
-
-/* ═══════════ 辅助：移动文件 ═══════════ */
-
-async function moveFile(env: Env, srcPath: string, destPath: string): Promise<void> {
-  const srcLast = srcPath.lastIndexOf("/");
-  const srcDir = srcLast <= 0 ? "/" : srcPath.slice(0, srcLast);
-  const srcName = srcPath.slice(srcLast + 1);
-
-  const file = await findFile(env, srcDir, srcName);
-  if (!file) return;
-
-  const destLast = destPath.lastIndexOf("/");
-  const destDir = destLast <= 0 ? "/" : destPath.slice(0, destLast);
-  const destName = destPath.slice(destLast + 1);
-  const fullDestPath = destDir === "/" ? `/${destName}` : `${destDir}/${destName}`;
-
-  await env.db.prepare(
-    "UPDATE files SET path = ?1, name = ?2 WHERE id = ?3"
-  ).bind(fullDestPath, destName, file.id).run();
-}
-
-/* ═══════════ 辅助：移动目录（递归更新 path 前缀） ═══════════ */
-
-async function moveDirectory(env: Env, srcDir: string, destDir: string): Promise<void> {
-  const likePattern = srcDir === "/" ? "/%" : srcDir + "/%";
-  const { results: files } = await env.db
-    .prepare("SELECT id, path FROM files WHERE path LIKE ?1")
-    .bind(likePattern)
-    .all<{ id: string; path: string }>();
-
-  for (const f of files) {
-    let newPath: string;
-    if (srcDir === "/") {
-      newPath = destDir + f.path;
-      if (!newPath.startsWith("/")) newPath = "/" + newPath;
-    } else {
-      newPath = destDir + f.path.slice(srcDir.length);
-    }
-    await env.db.prepare("UPDATE files SET path = ?1 WHERE id = ?2").bind(newPath, f.id).run();
-  }
-
-  // 也更新 directories 表中的子目录记录
-  const { results: dirs } = await env.db
-    .prepare("SELECT path FROM directories WHERE path LIKE ?1")
-    .bind(likePattern)
-    .all<{ path: string }>();
-
-  for (const d of dirs) {
-    let newPath: string;
-    if (srcDir === "/") {
-      newPath = destDir + d.path;
-    } else {
-      newPath = destDir + d.path.slice(srcDir.length);
-    }
-    await env.db.prepare("DELETE FROM directories WHERE path = ?1").bind(d.path).run();
-    await env.db.prepare("INSERT INTO directories(path, created_at) VALUES(?1, ?2) ON CONFLICT(path) DO NOTHING")
-      .bind(newPath, Date.now()).run();
-  }
-
-  // 更新目录本身
-  await env.db.prepare("DELETE FROM directories WHERE path = ?1").bind(srcDir).run();
-  await env.db.prepare("INSERT INTO directories(path, created_at) VALUES(?1, ?2) ON CONFLICT(path) DO NOTHING")
-    .bind(destDir, Date.now()).run();
 }
