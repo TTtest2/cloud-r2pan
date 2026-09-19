@@ -225,6 +225,12 @@ const MIGRATION_STATEMENTS: string[] = [
     created_at INTEGER NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS idx_upload_sessions_created ON upload_sessions(created_at)",
+  // ═══════════ 分享整个目录 ═══════════
+  // folder_id 非空 = 目录分享；此时 file_id 是 ''（shares.file_id 是 NOT NULL，
+  // 老库不做表重建）。所有 `JOIN files f ON f.id = s.file_id` 因此天然不会命中目录分享，
+  // 需要展示目录分享的查询必须走 folder_id。
+  "ALTER TABLE shares ADD COLUMN folder_id TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_shares_folder ON shares(folder_id)",
 ];
 
 /**

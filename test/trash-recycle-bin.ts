@@ -124,6 +124,9 @@ class Db {
         }));
     }
 
+    /* ── 目录分享（本测试里不存在）── */
+    if (/FROM shares s JOIN folders fo/.test(sql)) return null;
+
     /* ── 分享/直链 单条读 ── */
     if (/FROM shares s JOIN files f/.test(sql) && /WHERE s\.id = \?1/.test(sql)) {
       const live = /f\.deleted_at IS NULL/.test(sql);

@@ -736,7 +736,8 @@ export async function handleAdminApi(
   // ── 创建分享 ──────────────────────────────────────
   if (path === "/api/admin/shares" && method === "POST") {
     const body = await readJson<{
-      file_id: string;
+      file_id?: string | null;
+      folder_id?: string | null;
       expires_hours: number | null;
       max_downloads: number | null;
       password: string | null;
@@ -745,10 +746,22 @@ export async function handleAdminApi(
       market_title?: string | null;
       market_desc?: string | null;
     }>(req);
-    if (!body.file_id) return json({ error: msg(req, "缺少 file_id", "Missing file_id") }, 400);
-    const fileId = body.file_id;
-    const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1 AND deleted_at IS NULL").bind(fileId).first();
-    if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
+    const fileId = (body.file_id ?? "").trim();
+    const folderId = (body.folder_id ?? "").trim();
+    if (!fileId && !folderId)
+      return json({ error: msg(req, "缺少 file_id 或 folder_id", "Missing file_id or folder_id") }, 400);
+    if (fileId && folderId)
+      return json({ error: msg(req, "一条分享只能指向文件或目录之一", "A share points at either a file or a folder") }, 400);
+
+    let isFolder = false;
+    if (fileId) {
+      const file = await env.db.prepare("SELECT id FROM files WHERE id = ?1 AND deleted_at IS NULL").bind(fileId).first();
+      if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
+    } else {
+      const fo = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(folderId).first();
+      if (!fo) return json({ error: msg(req, "目录不存在", "Folder not found") }, 404);
+      isFolder = true;
+    }
     const expiresAt =
       body.expires_hours && body.expires_hours > 0 ? Date.now() + body.expires_hours * 3600_000 : null;
     const maxDownloads =
@@ -759,8 +772,8 @@ export async function handleAdminApi(
     // 可逆加密存储密码明文，管理员之后可查看
     const passwordCipher = password ? await encryptSecret(password, env.admin) : null;
     const downloadName =
-      typeof body.download_name === "string" && body.download_name.trim() ? body.download_name.trim() : null;
-    const isMarket = body.is_market ? 1 : 0;
+      !isFolder && typeof body.download_name === "string" && body.download_name.trim() ? body.download_name.trim() : null;
+    const isMarket = !isFolder && body.is_market ? 1 : 0;
     if (isMarket && passwordHash) {
       return json({ error: msg(req, "带访问口令的分享不能上架到下载市场", "Password-protected shares cannot be listed on the marketplace") }, 400);
     }
@@ -770,14 +783,14 @@ export async function handleAdminApi(
       typeof body.market_desc === "string" && body.market_desc.trim() ? body.market_desc.trim() : null;
     const id = randomId(10);
     await env.db.prepare(
-      `INSERT INTO shares(id, file_id, created_at, expires_at, max_downloads, password_hash, password_cipher, download_name, is_market, market_title, market_desc)
-       VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+      `INSERT INTO shares(id, file_id, folder_id, created_at, expires_at, max_downloads, password_hash, password_cipher, download_name, is_market, market_title, market_desc)
+       VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
     )
-      .bind(id, body.file_id, Date.now(), expiresAt, maxDownloads, passwordHash, passwordCipher, downloadName, isMarket, marketTitle, marketDesc)
+      .bind(id, isFolder ? "" : fileId, isFolder ? folderId : null, Date.now(), expiresAt, maxDownloads, passwordHash, passwordCipher, downloadName, isMarket, marketTitle, marketDesc)
       .run();
 
     let directUrl: string | null = null;
-    if (!passwordHash) {
+    if (!passwordHash && !isFolder) {
       const dlId = randomId(12);
       await env.db.batch(shareDirectLinkStmts(env, dlId, {
         id,
@@ -799,17 +812,21 @@ export async function handleAdminApi(
     const offset = Math.max(0, Number(sp.get("offset")) || 0);
     const totalRow = await env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>();
     const { results } = await env.db.prepare(
-      `SELECT s.id, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked,
+      `SELECT s.id, s.file_id, s.folder_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked,
               s.password_hash, s.download_name, s.direct_id,
               s.is_market, s.market_views, s.market_title, s.market_desc,
-              f.name AS file_name, f.size AS file_size, f.mime AS file_mime
-       FROM shares s JOIN files f ON f.id = s.file_id
+              f.name AS file_name, f.size AS file_size, f.mime AS file_mime,
+              fo.name AS folder_name
+       FROM shares s
+       LEFT JOIN files f ON f.id = s.file_id
+       LEFT JOIN folders fo ON fo.id = s.folder_id
        ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2`
     ).bind(limit, offset).all();
     const now = Date.now();
-    // 这个功能上线前创建的分享没有直链，这里按需补建（有密码的不补：直链等于绕过密码）
+    // 这个功能上线前创建的分享没有直链，这里按需补建（有密码的不补：直链等于绕过密码；
+    // 目录分享也不补 —— /d/:id 指向的是单个文件）
     const backfill = (results ?? []).filter((s: any) =>
-      !s.direct_id && !s.password_hash && !s.revoked &&
+      !s.direct_id && !s.folder_id && !s.password_hash && !s.revoked &&
       !(s.expires_at && s.expires_at < now) &&
       !(s.max_downloads && s.download_count >= s.max_downloads));
     if (backfill.length) {
@@ -822,6 +839,8 @@ export async function handleAdminApi(
     }
     const shares = (results ?? []).map((s: any) => ({
       ...s,
+      kind: s.folder_id ? "folder" : "file",
+      display_name: s.folder_id ? `📁 ${s.folder_name ?? "（目录已删除）"}` : s.file_name,
       has_password: !!s.password_hash,
       password_hash: undefined,
       url: `/s/${s.id}`,
@@ -927,12 +946,15 @@ export async function handleAdminApi(
     const id = shareMarketMatch[1];
     const body = await readJson<{ is_market?: boolean; market_title?: string | null; market_desc?: string | null }>(req);
     const existing = await env.db
-      .prepare("SELECT id, password_hash FROM shares WHERE id = ?1")
+      .prepare("SELECT id, password_hash, folder_id FROM shares WHERE id = ?1")
       .bind(id)
-      .first<{ id: string; password_hash: string | null }>();
+      .first<{ id: string; password_hash: string | null; folder_id: string | null }>();
     if (!existing) return json({ error: msg(req, "分享不存在", "Share not found") }, 404);
     if (body.is_market && existing.password_hash) {
       return json({ error: msg(req, "带访问口令的分享不能上架到下载市场", "Password-protected shares cannot be listed on the marketplace") }, 400);
+    }
+    if (body.is_market && existing.folder_id) {
+      return json({ error: msg(req, "目录分享不能上架到下载市场（条目必须指向单个文件）", "Directory shares cannot be listed on the marketplace (entries must point at a single file)") }, 400);
     }
     const isMarket = body.is_market === undefined ? null : (body.is_market ? 1 : 0);
     const mTitle = typeof body.market_title === "string" ? (body.market_title.trim() || null) : null;

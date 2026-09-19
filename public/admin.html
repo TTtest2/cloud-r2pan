@@ -433,6 +433,9 @@ const I18N = {
     uploadDone: '完成 ✅', uploadFailShort: '失败',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
+    shareModalTitleFolder: '分享整个目录', shareModalSubFolder: '对方可浏览该目录及其子目录，并逐个下载文件（口令/有效期/次数对整条分享生效）',
+    marketFolderNa: '目录分享不进市场（市场条目必须指向单个文件）',
+    shareFolder: '分享目录',
     validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d30: '30 天',
     sharePassword: '访问密码（可选）', sharePasswordPh: '留空则无需密码',
     sharePasswordHint: '设置后，访客需输入密码才能下载。',
@@ -763,6 +766,9 @@ const I18N = {
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
+    shareModalTitleFolder: 'Share This Folder', shareModalSubFolder: 'Visitors can browse this folder and its subfolders and download files one by one (password / expiry / cap apply to the whole share)',
+    marketFolderNa: 'Folder shares are not listed on the marketplace (entries must point at a single file)',
+    shareFolder: 'Share folder',
     validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d30: '30 days',
     sharePassword: 'Access password (optional)', sharePasswordPh: 'Leave blank for no password',
     sharePasswordHint: 'When set, visitors must enter a password to download.',
@@ -1509,7 +1515,7 @@ async function loadFiles(){
       </select>`}
       <input id="fo-search" type="search" value="${esc(filesQuery)}" placeholder="${esc(t('fileSearchPh'))}" autocomplete="off"
         style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none;min-width:180px">
-      ${!filesTrash && fmap[filesFolder] ? `<button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
+      ${!filesTrash && fmap[filesFolder] ? `<button class="btn sm primary" id="fo-share">${esc(t('shareFolder'))}</button><button class="btn sm danger" id="fo-del">${esc(t('deleteFolder'))}</button>` : ''}
       ${filesTrash ? `<button class="btn sm danger" id="tp-purge-all">${esc(t('purgeAll'))}</button><button class="btn sm" id="tp-run">${esc(t('runCleanup'))}</button><span style="opacity:.7;font-size:13px">${esc(t('trashHint'))}</span>`
         : `<span style="opacity:.7;font-size:13px">${esc(t('uploadTo', { where: targetName }))}</span>`}
     </div>
@@ -1609,6 +1615,8 @@ async function loadFiles(){
   });
   const newBtn = $('#fo-new');
   if (newBtn) newBtn.onclick = openNewFolderModal;
+  const shareFolderBtn = $('#fo-share');
+  if (shareFolderBtn) shareFolderBtn.onclick = () => openShareModal(null, filesFolder);
   const delBtn = $('#fo-del');
   if(delBtn) delBtn.onclick = async () => {
     const name = fmap[filesFolder] || '';
@@ -1820,10 +1828,11 @@ async function uploadChunked(file, setProg, item){
 }
 
 /* ═══════════ 创建分享弹窗 ═══════════ */
-function openShareModal(fileId){
+function openShareModal(fileId, folderId){
+  const isFolder = !!folderId;
   openModal(`
-    <h3>${esc(t('shareModalTitle'))}</h3>
-    <div class="sub">${esc(t('shareModalSub'))}</div>
+    <h3>${esc(isFolder ? t('shareModalTitleFolder') : t('shareModalTitle'))}</h3>
+    <div class="sub">${esc(isFolder ? t('shareModalSubFolder') : t('shareModalSub'))}</div>
     <div class="field">
       <label>${esc(t('validity'))}</label>
       <select id="sh-exp" style="width:100%;padding:12px 14px;border-radius:14px;font-size:15px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">
@@ -1865,6 +1874,12 @@ function openShareModal(fileId){
       <button class="btn primary" id="sh-create">${esc(t('generate'))}</button>
     </div>`);
   $('[data-x]').onclick = closeModal;
+  if (isFolder) {
+    const dl = $('#sh-dlname');
+    if (dl) dl.closest('.field').hidden = true;
+    const mk = $('#sh-market');
+    if (mk) mk.closest('.field').hidden = true;
+  }
   const mkBox = $('#sh-market');
   mkBox.onchange = () => { $('#sh-market-fields').style.display = mkBox.checked ? 'block' : 'none'; };
   $('#sh-create').onclick = async () => {
@@ -1872,11 +1887,12 @@ function openShareModal(fileId){
     const max = Number($('#sh-max').value) || null;
     const password = $('#sh-pwd').value.trim() || null;
     const download_name = $('#sh-dlname').value.trim() || null;
-    const is_market = mkBox.checked;
+    const is_market = isFolder ? false : mkBox.checked;
     if (is_market && password) { toast(t('marketNeedNoPassword'), 'err'); return; }
     try{
       const r = await api('/api/admin/shares', { method:'POST', body: JSON.stringify({
-        file_id: fileId, expires_hours: exp, max_downloads: max, password, download_name,
+        file_id: isFolder ? null : fileId, folder_id: isFolder ? folderId : null,
+        expires_hours: exp, max_downloads: max, password, download_name,
         is_market,
         market_title: is_market ? ($('#sh-mkt-title').value.trim() || null) : null,
         market_desc: is_market ? ($('#sh-mkt-desc').value.trim() || null) : null,
@@ -1936,14 +1952,14 @@ async function loadShares(append = false){
         <tbody>${shares.map(s => {
           return `
           <tr>
-            <td class="name-cell ck-cell">${ckbox(s.id)}${ficon(s.file_name)} ${esc(s.file_name)}${s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
+            <td class="name-cell ck-cell">${ckbox(s.id)}${s.kind === 'folder' ? '📁 ' : ficon(s.file_name) + ' '}${esc(s.display_name ?? s.file_name)}${s.kind !== 'folder' && s.download_name && s.download_name !== s.file_name ? `<div style="font-size:11px;color:#0f9d58;margin-top:2px">↳ ${esc(s.download_name)}</div>` : ''}</td>
             <td class="mono">${s.has_password?'🔒 ':''}<a href="/s/${s.id}" target="_blank" style="color:#2563eb;text-decoration:none">/s/${s.id}</a>${s.direct_url ? `<br><span style="font-size:10px;color:rgba(29,36,51,.45)">直链 </span><a href="${s.direct_url}" target="_blank" data-direct="${location.origin}${s.direct_url}" class="dl-link" style="color:#b45309;text-decoration:none;font-size:11px">${s.direct_url}</a><button class="btn sm" data-cdirect="${location.origin}${s.direct_url}" style="padding:1px 6px;font-size:10px;margin-left:2px">📋</button>` : ''}</td>
             <td class="mono">${s.has_password ? `<span id="pw-${s.id}" style="font-family:ui-monospace,'SF Mono',monospace;color:#b45309">••••••</span>
               <button class="btn sm" data-pw="${s.id}" style="padding:2px 8px;font-size:11px;margin-left:4px">👁</button>
               <button class="btn sm" data-cpw="${s.id}" style="padding:2px 8px;font-size:11px">📋</button>` : `<span style="color:var(--text-3)">—</span>`}</td>
-            <td class="mono">${s.is_market
+            <td class="mono">${s.kind === 'folder' ? `<span style="color:var(--text-3)" title="${esc(t('marketFolderNa'))}">—</span>` : (s.is_market
               ? `<button class="btn sm" data-mkt="${s.id}" data-on="0" title="${esc(t('marketOff'))}">🏪 ${esc(t('marketOn'))}</button>`
-              : `<button class="btn sm" data-mkt="${s.id}" data-on="1">${s.has_password ? '🔒 ' : ''}${esc(t('marketOnBtn'))}</button>`}</td>
+              : `<button class="btn sm" data-mkt="${s.id}" data-on="1">${s.has_password ? '🔒 ' : ''}${esc(t('marketOnBtn'))}</button>`)}</td>
             <td class="num">${s.download_count} / ${s.max_downloads ?? '∞'}</td>
             <td class="num">${fmtTime(s.created_at)}</td>
             <td class="num">${s.expires_at ? fmtTime(s.expires_at) : esc(t('forever'))}</td>

@@ -20,6 +20,8 @@ export interface ShareRow {
   /** 分享链接 token（/s/:id） */
   id: string;
   file_id: string;
+  /** 非空 = 目录分享（此时 file_id 是 ''） */
+  folder_id?: string | null;
   created_at: number;
   expires_at: number | null;
   max_downloads: number | null;

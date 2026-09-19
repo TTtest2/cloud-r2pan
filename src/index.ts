@@ -1,7 +1,7 @@
 import type { Env } from "./types";
 import { ensureSchema } from "./db";
 import { handleAdminApi } from "./admin";
-import { handleDownload, handleDirectDownload, handleShareInfo, handleVerify } from "./public";
+import { handleDownload, handleDirectDownload, handleShareInfo, handleShareChildren, handleVerify } from "./public";
 import { serveAdminPage, serveSharePage, serveMarketPage, errorPage } from "./pages";
 import {
   handleOAuthStart,
@@ -149,6 +149,19 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
     }
     if (sub === "/info") {
       return handleShareInfo(req, env, token);
+    }
+    if (sub === "/children") {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      const ip = clientIp(req);
+      if (!rateLimit(ip, "share-children:" + token, 60)) {
+        return Response.json(
+          { error: "too_many_attempts", message: "请求过于频繁，请稍后再试" },
+          { status: 429, headers: { "Retry-After": String(rateLimitRetryAfter(ip, "share-children:" + token)) } }
+        );
+      }
+      return handleShareChildren(req, env, token);
     }
     if (sub === "/verify") {
       if (req.method !== "POST") {

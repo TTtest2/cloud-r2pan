@@ -69,6 +69,14 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
 .btn:hover { transform: translateY(-1px) scale(1.01); }
 .btn:active { transform: scale(.97); }
 .btn svg { width: 19px; height: 19px; }
+.btn.sm { padding: 9px 14px; font-size: 13px; border-radius: 12px; }
+.fb-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.fb-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 14px;
+  background: rgba(255,255,255,.72); border: 1px solid rgba(24,34,58,.08); box-shadow: 0 2px 8px rgba(24,34,58,.05); font-size: 14px; }
+.fb-row a { color: #1d2433; text-decoration: none; }
+.fb-row a:hover { text-decoration: underline; }
+.fb-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.fb-size { flex: 0 0 auto; opacity: .6; font-size: 12.5px; }
 
 .hint { margin-top: 14px; font-size: 12.5px; color: rgba(29,36,51,.45); line-height: 1.6; }
 
@@ -282,6 +290,11 @@ const I18N = {
     download: '下载文件',
     preview: '在线预览',
     unlockedHint: '已解锁 · 可直接预览或下载',
+    folderHint: '目录分享 · 点开子目录，点击文件即可下载',
+    folderUp: '↑ 返回上级',
+    folderEmpty: '这个目录是空的',
+    folderFail: '读取目录失败，请稍后重试',
+    folderCount: '{d} 个文件夹 · {f} 个文件',
     protected: '🔒 该分享受密码保护',
     passwordPlaceholder: '输入访问密码', unlock: '解锁下载',
     unlockHint: '输入管理员提供的密码后即可开始下载',
@@ -342,6 +355,11 @@ const I18N = {
     download: 'Download',
     preview: 'Preview',
     unlockedHint: 'Unlocked · preview or download directly',
+    folderHint: 'Folder share · open subfolders, click a file to download',
+    folderUp: '↑ Up one level',
+    folderEmpty: 'This folder is empty',
+    folderFail: 'Could not read this folder. Please retry.',
+    folderCount: '{d} folder(s) · {f} file(s)',
     protected: '🔒 This share is password-protected',
     passwordPlaceholder: 'Enter access password', unlock: 'Unlock & Download',
     unlockHint: 'Enter the password provided by the administrator to download',
@@ -544,6 +562,8 @@ function render(d, siteName, oauthErr, oauthProviders){
     maxed:[t('maxedTitle'), t('maxedMsg', {n: d.max_downloads})]
   }[d.status];
   if(gone){ renderError(gone[0],gone[1]); return; }
+  // 目录分享：口令已解（或本来就没有口令）时整页换成目录浏览器
+  if(d.kind === 'folder' && !d.needs_password){ renderFolder(d, null); return; }
 
   // Turnstile 判断：后端返回了 needs_now (on_share 模式已判断) 或 mode=on_download 时需要
   const ts = d.turnstile || {};
@@ -919,6 +939,7 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
           <a class="btn" href="${esc(url)}">${esc(t('download'))}</a>
           ${canPreview(d.mime) ? `<a class="btn" href="${esc(url + sep + 'inline=1')}" target="_blank" rel="noopener" style="margin-top:8px;background:#ffffff;color:#1d2433;border:1px solid rgba(24,34,58,.12);box-shadow:0 2px 8px rgba(24,34,58,.06);font-size:13px">🔍 ${esc(t('preview'))}</a>` : ''}`;
       };
+      if(r.ok && res.kind === 'folder'){ renderFolder(d, res.t || null); return; }
       if(r.ok && res.url){
         // on_download 模式需要 cf 参数
         if(tsEnabled && tsOnDownload && !res.url.includes('cf=')){
@@ -954,6 +975,72 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
   };
   btn.onclick = unlock;
   input.addEventListener('keydown', e => { if(e.key === 'Enter') unlock(); });
+}
+
+/* ═══════ 目录分享浏览 ═══════ */
+let FB_TICKET = null;
+let FB_ROOT = null;
+
+function renderFolder(d, ticket){
+  if (ticket) FB_TICKET = ticket;
+  FB_ROOT = d.folder_root;
+  $('#app').innerHTML = `
+    <div class="file-icon" style="font-size:36px">📁</div>
+    <h1>${esc(d.name || '')}</h1>
+    <div class="meta"><span>${esc(t('folderHint'))}</span></div>
+    ${d.quota_exceeded ? `<div class="warn">${esc(t('quotaWarn'))}</div>` : ''}
+    <div class="meta" id="fb-trail" style="margin-top:10px"></div>
+    <div id="fb-list" class="fb-list"></div>`;
+  if (FB_ROOT) browse(FB_ROOT);
+}
+
+/** 给下载/预览链接补上口令牌与已绑定的激活码 */
+function fbHref(url){
+  const extra = [];
+  if (FB_TICKET) extra.push('t=' + encodeURIComponent(FB_TICKET));
+  const code = getBoundCode();
+  if (code) extra.push('code=' + encodeURIComponent(code));
+  if (!extra.length) return url;
+  return url + (url.includes('?') ? '&' : '?') + extra.join('&');
+}
+
+async function browse(dir){
+  const list = $('#fb-list');
+  if (!list) return;
+  const qs = new URLSearchParams({ dir });
+  if (FB_TICKET) qs.set('t', FB_TICKET);
+  list.innerHTML = `<div class="hint">…</div>`;
+  let r, data = null;
+  try {
+    r = await fetch(`/s/${token}/children?${qs.toString()}`, { credentials: 'same-origin' });
+    data = await r.json().catch(() => null);
+  } catch {
+    list.innerHTML = `<div class="warn">${esc(t('folderFail'))}</div>`;
+    return;
+  }
+  if (!r.ok || !data || data.error) {
+    const msg = data && data.error === 'password_required' ? t('protected') : t('folderFail');
+    list.innerHTML = `<div class="warn">${esc(msg)}</div>`;
+    return;
+  }
+  const trail = data.trail || [];
+  const crumb = $('#fb-trail');
+  if (crumb) crumb.innerHTML = trail.map((x, i) => `${i ? ' <span style="opacity:.45">/</span> ' : ''}<span>${esc(x.name)}</span>`).join('');
+  const rows = [];
+  if (data.can_up && trail.length > 1) rows.push(`<div class="fb-row"><a href="javascript:void(0)" data-up="${esc(trail[trail.length - 2].id)}">↩ ${esc(t('folderUp'))}</a></div>`);
+  for (const dd of data.dirs || []) rows.push(`<div class="fb-row"><a href="javascript:void(0)" data-dir="${esc(dd.id)}">📁 ${esc(dd.name)}</a></div>`);
+  for (const f of data.files || []) {
+    const dl = fbHref(f.url);
+    rows.push(`<div class="fb-row">
+      <span class="fb-name" title="${esc(f.name)}">📄 ${esc(f.name)}</span>
+      <span class="fb-size">${fmtSize(f.size)}</span>
+      <a class="btn sm" href="${esc(dl)}">⬇ ${esc(t('download'))}</a>
+      ${canPreview(f.mime) ? `<a class="btn sm" href="${esc(dl + (dl.includes('?') ? '&' : '?') + 'inline=1')}" target="_blank" rel="noopener">🔍 ${esc(t('preview'))}</a>` : ''}
+    </div>`);
+  }
+  list.innerHTML = rows.length ? rows.join('') : `<div class="hint">${esc(t('folderEmpty'))}</div>`;
+  list.querySelectorAll('[data-dir]').forEach(a => a.onclick = () => browse(a.dataset.dir));
+  list.querySelectorAll('[data-up]').forEach(a => a.onclick = () => browse(a.dataset.up));
 }
 
 boot();

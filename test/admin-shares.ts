@@ -88,7 +88,7 @@ class FakeDb {
       return mode === "all" ? [{ key: "admin_ips", value: "" }] : null;
     }
     if (/^SELECT COUNT\(\*\) AS c FROM shares$/.test(sql)) return { c: this.shares.length };
-    if (/FROM shares s JOIN files f/.test(sql)) {
+    if (/FROM shares s (LEFT )?JOIN files f/.test(sql)) {
       if (mode !== "all") return null;
       const [limit, offset] = binds as number[];
       // 只返回 SQL 真正投影的 s.xxx 列 —— 这样别人把 password_cipher 加回 SELECT 时测试才会红
@@ -106,10 +106,10 @@ class FakeDb {
       if (!row) return null;
       return { password_cipher: row.password_cipher };
     }
-    if (/^SELECT id, password_hash FROM shares WHERE id = \?1/.test(sql)) {
+    if (/^SELECT id, password_hash(, folder_id)? FROM shares WHERE id = \?1/.test(sql)) {
       const row = this.shares.find((s) => s.id === binds[0]);
       if (!row) return null;
-      return { id: row.id, password_hash: row.password_hash };
+      return { id: row.id, password_hash: row.password_hash, folder_id: (row as any).folder_id ?? null };
     }
     if (/^UPDATE shares SET /.test(sql)) {
       const id = binds[binds.length - 1] as string;

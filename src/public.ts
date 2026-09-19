@@ -151,7 +151,7 @@ async function verifyShareToken(env: Env, token: string, query: string): Promise
 
 /** GET /s/:token —— 分享页元信息（供前端渲染） */
 export async function handleShareInfo(req: Request, env: Env, token: string): Promise<Response> {
-  const row = await getShare(env, token);
+  const row = await getShareEntry(env, token);
   if (!row) return json({ error: "not_found" }, { status: 404 });
   const settings = await getSettings(env);
   const ip = clientIp(req);
@@ -194,9 +194,11 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
 
   return json({
     status,
+    kind: row.is_folder ? "folder" : "file",
+    folder_root: row.folder_root ?? null,
     name: row.name,
-    size: row.size,
-    mime: row.mime,
+    size: row.is_folder ? null : row.size,
+    mime: row.is_folder ? null : row.mime,
     downloads: row.download_count,
     created_at: row.created_at,
     expires_at: row.expires_at,
@@ -248,10 +250,114 @@ async function getDirectLink(env: Env, token: string): Promise<DirectLinkWithFil
     .first<DirectLinkWithFile>();
 }
 
+/* ═══════════ 目录分享（shares.folder_id + file_id = '' 哨兵） ═══════════ */
+
+/** 带目录信息的分享行 */
+export type ShareEntry = ShareWithFile & { is_folder?: boolean; folder_root?: string };
+
+/**
+ * 目录分享伪装成 ShareWithFile：闸门只读 revoked/expires_at/max_downloads/password_hash，
+ * key 给空串 —— 目录本身不能整包下载（免费档 10 ms CPU 压不动 zip），必须 ?file= 指定。
+ */
+async function getFolderShare(env: Env, token: string): Promise<ShareEntry | null> {
+  const row = await env.db
+    .prepare(
+      `SELECT s.id, s.file_id, s.folder_id, s.created_at, s.expires_at, s.max_downloads, s.download_count,
+              s.revoked, s.password_hash, s.download_name, fo.name
+       FROM shares s JOIN folders fo ON fo.id = s.folder_id
+       WHERE s.id = ?1 AND s.file_id = ''`
+    )
+    .bind(token)
+    .first<{ id: string; folder_id: string; name: string; created_at: number; expires_at: number | null; max_downloads: number | null; download_count: number; revoked: number; password_hash: string | null; download_name: string | null }>();
+  if (!row) return null;
+  return {
+    ...row,
+    file_id: "",
+    folder_root: row.folder_id,
+    is_folder: true,
+    key: "",
+    size: 0,
+    mime: "inode/directory",
+  } as ShareEntry;
+}
+
+/** 先按文件分享找，找不到再按目录分享找 */
+async function getShareEntry(env: Env, token: string): Promise<ShareEntry | null> {
+  const file = await getShare(env, token);
+  if (file) return file as ShareEntry;
+  return await getFolderShare(env, token);
+}
+
+/** 被分享目录子树内的一个活文件 */
+async function resolveSharedFile(env: Env, rootId: string, fileId: string) {
+  const { getFolderTree } = await import("./folders");
+  const tree = await getFolderTree(env);
+  if (!tree.get(rootId)) return null; // 目录已被删 → 分享自然失效
+  const ids = tree.subtreeIds(rootId);
+  const ph = ids.map((_, i) => `?${i + 1}`).join(", ");
+  return await env.db
+    .prepare(`SELECT id, key, name, size, mime, folder_id FROM files WHERE id = ?${ids.length + 1} AND deleted_at IS NULL AND folder_id IN (${ph})`)
+    .bind(...ids, fileId)
+    .first<{ id: string; key: string; name: string; size: number; mime: string; folder_id: string | null }>();
+}
+
+/** GET /s/:token/children?dir=<folderId>&t=<口令令牌> —— 浏览被分享的目录 */
+export async function handleShareChildren(req: Request, env: Env, token: string): Promise<Response> {
+  const row = await getShareEntry(env, token);
+  if (!row) return json({ error: "not_found" }, { status: 404 });
+  if (row.revoked) return json({ error: "gone" }, { status: 410 });
+  if (row.expires_at && row.expires_at < Date.now()) return json({ error: "expired" }, { status: 410 });
+  if (row.max_downloads && row.download_count >= row.max_downloads) return json({ error: "maxed" }, { status: 410 });
+  if (row.password_hash && !(await verifyShareToken(env, token, new URL(req.url).search))) {
+    return json({ error: "password_required" }, { status: 403 });
+  }
+  if (!row.is_folder || !row.folder_root) return json({ error: "not_a_folder" }, { status: 400 });
+
+  const { getFolderTree } = await import("./folders");
+  const tree = await getFolderTree(env);
+  const rootId = row.folder_root;
+  const allowed = new Set(tree.subtreeIds(rootId));
+  if (!allowed.size) return json({ error: "gone", message: "该目录已不存在" }, { status: 410 });
+
+  const sp = new URL(req.url).searchParams;
+  const dir = (sp.get("dir") || "").trim() || rootId;
+  if (!allowed.has(dir) || !tree.get(dir)) return json({ error: "not_in_share" }, { status: 403 });
+
+  const dirs = tree
+    .childrenOf(dir)
+    .map((n) => ({ id: n.id, name: n.name }))
+    .sort((a, b) => (a.name < b.name ? -1 : 1));
+  const { results } = await env.db
+    .prepare(`SELECT id, name, size, mime FROM files WHERE folder_id = ?1 AND deleted_at IS NULL ORDER BY name`)
+    .bind(dir)
+    .all<{ id: string; name: string; size: number; mime: string }>();
+
+  // 面包屑：从被分享的根目录开始，绝不暴露分享外的路径
+  const trail: { id: string; name: string }[] = [];
+  let cur: string | null = dir;
+  while (cur && allowed.has(cur)) {
+    const node = tree.get(cur);
+    if (!node) break;
+    trail.unshift({ id: cur, name: node.name });
+    if (cur === rootId) break;
+    cur = node.parent_id;
+  }
+
+  return json({
+    kind: "folder",
+    dir,
+    root: rootId,
+    trail,
+    can_up: dir !== rootId,
+    dirs,
+    files: (results ?? []).map((f) => ({ ...f, url: `/s/${token}/download?file=${encodeURIComponent(f.id)}` })),
+  });
+}
+
 /** POST /s/:token/verify —— 校验分享密码 + 可选 Turnstile，成功后颁发下载令牌 */
 export async function handleVerify(req: Request, env: Env, token: string): Promise<Response> {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
-  const row = await getShare(env, token);
+  const row = await getShareEntry(env, token);
   if (!row) return json({ error: "not_found" }, { status: 404 });
   let body: { password?: string; turnstile?: string } = {};
   try {
@@ -273,11 +379,13 @@ export async function handleVerify(req: Request, env: Env, token: string): Promi
   // 密码校验
   if (!row.password_hash) {
     // 无密码分享 → 如果 Turnstile 通过 + 没密码，直接给下载地址
+    if (row.is_folder) return json({ ok: true, kind: "folder", dir: row.folder_root });
     return json({ ok: true, url: `/s/${token}/download` });
   }
   if (!(await verifyPassword(row.password_hash, String(body.password ?? ""))))
     return json({ error: "bad_password" }, { status: 401 });
   const ticket = await issueToken(env, token);
+  if (row.is_folder) return json({ ok: true, kind: "folder", t: ticket, dir: row.folder_root });
   return json({ ok: true, url: `/s/${token}/download?t=${ticket}` });
 }
 
@@ -304,7 +412,7 @@ export async function handleDownload(
     activationCode ? findCodeByString(env, activationCode) : Promise.resolve(null),
     env.db.prepare("SELECT reason, expires_at FROM banned_ips WHERE ip = ?1")
       .bind(ip).first<{ reason: string | null; expires_at: number | null }>(),
-    getShare(env, token),
+    getShareEntry(env, token),
   ]);
 
   if (activationCode && codeRow) {
@@ -411,6 +519,20 @@ export async function handleDownload(
     }
   }
 
+  // 目录分享：?file=<id> 必须落在被分享的子树里，且不能是回收站条目。
+  // 解析放在扣名额之前 —— 给个无效 id 不该烧掉一次下载机会。
+  let target: StreamFileRow = row;
+  if (row.is_folder) {
+    const fileId = new URL(req.url).searchParams.get("file");
+    const hit = fileId && row.folder_root ? await resolveSharedFile(env, row.folder_root, fileId) : null;
+    if (!hit)
+      return errorPage(req, 404, { zh: "该文件不在此分享内", en: "File Not In This Share" },
+        { zh: "请通过分享页浏览该目录后选择文件。", en: "Browse the shared folder and pick a file." },
+        { siteTitle: settings.siteTitle });
+    // 目录分享不套用 download_name —— 那字段是"给单个文件改名"的语义
+    target = { file_id: hit.id, key: hit.key, name: hit.name, size: hit.size, mime: hit.mime, download_name: null };
+  }
+
   // 名额必须在所有闸门之后占用：被密码/验证码/限流挡掉的请求不该烧掉 max_downloads
   if (row.max_downloads) {
     const r = await env.db.prepare(
@@ -421,7 +543,7 @@ export async function handleDownload(
         { zh: `名额已用完。`, en: `Quota used up.` });
   }
 
-  return streamFile(req, env, ctx, row, token, "share");
+  return streamFile(req, env, ctx, target, token, "share");
 }
 
 /**
