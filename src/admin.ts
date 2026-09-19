@@ -9,6 +9,15 @@ import { parseUA } from "./ua";
 import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual, hashWebDAVPassword } from "./crypto";
 import { getStorageProvider as storage } from "./storage";
 import { getFolderTree, createFolder, invalidateFolderTree } from "./folders";
+import {
+  cappedStream,
+  declaredSize,
+  formatMb,
+  isOverLimitError,
+  postUploadRejection,
+  preUploadRejection,
+  usedStorageBytes,
+} from "./limits";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -108,6 +117,14 @@ async function writeLoginLog(
   } catch {
     // 日志写入失败不影响主流程
   }
+}
+
+/** 上传被体积闸门挡下时的提示文案 */
+function uploadRejectMsg(req: Request, r: { code: "too_large" | "quota_exceeded"; limitBytes: number }): string {
+  const mb = formatMb(r.limitBytes);
+  return r.code === "too_large"
+    ? msg(req, `文件超过单个文件上限 ${mb} MB`, `File exceeds the ${mb} MB per-file limit`)
+    : msg(req, `存储空间不足（总配额 ${mb} MB）`, `Not enough storage quota (limit ${mb} MB)`);
 }
 
 export async function handleAdminApi(
@@ -256,6 +273,7 @@ export async function handleAdminApi(
     return json({
       ok: true,
       site_title: s.siteTitle,
+      max_upload_mb: Math.round(s.maxUploadBytes / 1024 ** 2),
       totp_enabled: s.totpEnabled,
       cloudflare_recovery: !!env.totp_recovery,
       recovery_remaining: s.totpRecoveryHash ? s.totpRecoveryHash.split(",").filter(Boolean).length : 0,
@@ -447,16 +465,45 @@ export async function handleAdminApi(
     const key = `files/${id}`;
     const mime = req.headers.get("content-type") || "application/octet-stream";
     const st = await storage(env);
+
+    const settings = await getSettings(env);
+    const declared = declaredSize(req);
+    const usedBytes = settings.storageQuotaBytes > 0 ? await usedStorageBytes(env) : 0;
+    const rejected = preUploadRejection(settings, usedBytes, declared);
+    if (rejected) {
+      return json(
+        { error: rejected.code, limit_mb: formatMb(rejected.limitBytes), message: uploadRejectMsg(req, rejected) },
+        rejected.status
+      );
+    }
+
+    const body = settings.maxUploadBytes > 0 ? cappedStream(req.body, settings.maxUploadBytes) : req.body;
     let resultSize = 0;
     try {
-      const res = await st.put(key, req.body, {
+      const res = await st.put(key, body, {
         contentType: mime,
         contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
-        contentLength: Number(req.headers.get("content-length")) || undefined,
+        contentLength: declared ?? undefined,
       });
       resultSize = res.size;
     } catch (err: any) {
+      await st.delete(key).catch(() => {});
+      if (isOverLimitError(err)) {
+        return json(
+          { error: "too_large", limit_mb: formatMb(settings.maxUploadBytes), message: uploadRejectMsg(req, { code: "too_large", limitBytes: settings.maxUploadBytes }) },
+          413
+        );
+      }
       return json({ error: msg(req, "存储写入失败", "Storage write failed"), detail: String(err?.message || err) }, 500);
+    }
+    const overQuota = postUploadRejection(settings, usedBytes, resultSize);
+    if (overQuota) {
+      // 配额按真实写入量判定：对象删掉、行不落库，等于什么都没发生
+      await st.delete(key).catch(() => {});
+      return json(
+        { error: overQuota.code, limit_mb: formatMb(overQuota.limitBytes), message: uploadRejectMsg(req, overQuota) },
+        overQuota.status
+      );
     }
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──
     try {
@@ -1199,6 +1246,8 @@ export async function handleAdminApi(
     const enabledProviders = providers.results.filter((p) => p.enabled);
     return json({
       site_title: s.siteTitle,
+      max_upload_mb: s.maxUploadBytes / 1024 ** 2,
+      storage_quota_mb: s.storageQuotaBytes / 1024 ** 2,
       traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
       max_downloads_per_ip: s.maxDownloadsPerIp,
       count_window_hours: s.countWindowHours,
@@ -1258,6 +1307,11 @@ export async function handleAdminApi(
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
     const gb = num(body.traffic_limit_gb);
     if (gb !== null) patch.traffic_limit_bytes = String(Math.round(gb * 1024 ** 3));
+    // 单文件上限：Workers 的请求体本身就卡在 100 MB，写更大只是自欺
+    const uploadMb = num(body.max_upload_mb);
+    if (uploadMb !== null) patch.max_upload_mb = String(Math.min(100, Math.floor(uploadMb)));
+    const quotaMb = num(body.storage_quota_mb); // 0 = 不限
+    if (quotaMb !== null) patch.storage_quota_mb = String(Math.floor(quotaMb));
     const perIp = num(body.max_downloads_per_ip);
     if (perIp !== null) patch.max_downloads_per_ip = String(Math.floor(perIp));
     const window = num(body.count_window_hours);

@@ -408,6 +408,18 @@ async function main() {
     check("覆盖时清掉旧文件的直链", store.cascadeTables.includes("direct_links"), store.cascadeTables.join(","));
     const rootPut = await request("PUT", "/top.txt", { body: new TextEncoder().encode("z") });
     check("根下上传 → 201 且 folder_id 为空", rootPut.status === 201 && store.fileByName("top.txt", null) !== null);
+
+    // 体积闸门：与管理端共用同一套上限判定
+    const filesBefore = store.files.length;
+    SETTINGS_ROWS = SETTINGS_ROWS.filter((r) => r.key !== "max_upload_mb").concat({ key: "max_upload_mb", value: "1" });
+    invalidateSettingsCache();
+    const tooBig = await request("PUT", "/dir/huge.bin", { body: new Uint8Array(2 * 1024 * 1024) });
+    check("超过单文件上限 → 413", tooBig.status === 413, String(tooBig.status));
+    check("超限时不落库", store.files.length === filesBefore, String(store.files.length));
+    const okSmall = await request("PUT", "/dir/ok.bin", { body: new Uint8Array(2048) });
+    check("上限内照常通过", okSmall.status === 201, String(okSmall.status));
+    SETTINGS_ROWS = SETTINGS_ROWS.filter((r) => r.key !== "max_upload_mb");
+    invalidateSettingsCache();
   }
 
   console.log("\n[8] MKCOL");

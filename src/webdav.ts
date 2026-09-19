@@ -24,6 +24,15 @@ import type { Env } from "./types";
 import { getSettings, updateSettings } from "./settings";
 import { sha256Hex, hashWebDAVPassword, verifyWebDAVPassword } from "./crypto";
 import { clientIp, authThrottled, noteAuthFailure, clearAuthFailures } from "./auth";
+import {
+  cappedStream,
+  declaredSize,
+  formatMb,
+  isOverLimitError,
+  postUploadRejection,
+  preUploadRejection,
+  usedStorageBytes,
+} from "./limits";
 import { getStorageProvider as storage } from "./storage";
 import { randomId } from "./db";
 import {
@@ -514,21 +523,42 @@ async function handleWebDavPut(
   const mime = req.headers.get("content-type") || "application/octet-stream";
   const st = await storage(env);
 
+  const limits = await getSettings(env);
+  const declared = declaredSize(req);
+  const usedBytes = limits.storageQuotaBytes > 0 ? await usedStorageBytes(env) : 0;
+  const rejected = preUploadRejection(limits, usedBytes, declared);
+  if (rejected) {
+    return new Response(rejected.code === "too_large"
+      ? `Payload Too Large: per-file limit is ${formatMb(rejected.limitBytes)} MB`
+      : `Insufficient Storage: quota is ${formatMb(rejected.limitBytes)} MB`, { status: rejected.status });
+  }
+
   // 生成文件记录
   const id = randomId(14);
   const key = `files/${id}`;
   const now = Date.now();
 
   let size = 0;
+  const body = limits.maxUploadBytes > 0 ? cappedStream(req.body as ReadableStream<Uint8Array>, limits.maxUploadBytes) : (req.body as ReadableStream<Uint8Array>);
   try {
-    const res = await st.put(key, req.body as any, {
+    const res = await st.put(key, body as any, {
       contentType: mime,
       contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
-      contentLength: Number(req.headers.get("content-length")) || undefined,
+      contentLength: declared ?? undefined,
     });
     size = res.size;
   } catch (err: any) {
+    await st.delete(key).catch(() => {});
+    if (isOverLimitError(err)) {
+      return new Response(`Payload Too Large: per-file limit is ${formatMb(limits.maxUploadBytes)} MB`, { status: 413 });
+    }
     return new Response(`Storage error: ${err?.message || err}`, { status: 502 });
+  }
+
+  const overQuota = postUploadRejection(limits, usedBytes, size);
+  if (overQuota) {
+    await st.delete(key).catch(() => {});
+    return new Response(`Insufficient Storage: quota is ${formatMb(overQuota.limitBytes)} MB`, { status: 507 });
   }
 
   // 覆盖上传：先换行再删旧对象，中途失败最多留一个孤儿对象

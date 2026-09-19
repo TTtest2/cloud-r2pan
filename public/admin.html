@@ -413,13 +413,13 @@ const I18N = {
     colExpires: '有效期', colStatus: '状态', colReason: '原因', colBannedAt: '封禁时间', colUntil: '到期',
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
-    dropDesc: '单文件最大 100 MB（Workers 请求限制）· 直传 R2 对象存储',
+    dropDesc: '单文件最大 {mb} MB（服务端强制校验）· 直传 R2 对象存储',
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', dlFile: '下载', del: '删除',
     newFolder: '新建文件夹', folderNamePh: '文件夹名称', folderNameEmpty: '文件夹名不能为空',
     folderFilterAll: '全部位置', folderFilterRoot: '根目录', colFolder: '位置', uploadToRoot: '根目录',
     uploadTo: '上传到：{where}', deleteFolder: '删除文件夹', deleteFolderT: '删除文件夹', deleteFolderD: '删除空文件夹「{name}」？只有不含文件和子目录的文件夹才能删除。',
     folderDeleted: '文件夹已删除', folderCreatedToast: '已创建文件夹「{name}」',
-    tooLarge: '「{name}」超过 100 MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
+    tooLarge: '「{name}」超过 {mb} MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
@@ -458,6 +458,10 @@ const I18N = {
     // 设置
     siteName: '站点名称', siteNameD: '显示在分享页和后台标题',
     trafficLimit: '月度流量限额（GB）',
+    maxUpload: '单文件上限（MB）',
+    maxUploadD: '服务端会真的拦下超限上传（413），不再只是前端提示；0 表示只受 Workers 100 MB 请求体限制约束。',
+    storageQuota: '总存储配额（MB）',
+    storageQuotaD: '按已用存储判断，超限的上传会被拒绝并回滚（507）；0 表示不限。',
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
     resetTraffic: '重置本月流量', resetTrafficD: '将已用流量清零，立即恢复下载服务', reset: '重置',
     perIp: '单 IP 最大下载次数',
@@ -721,13 +725,13 @@ const I18N = {
     colExpires: 'Expires', colStatus: 'Status', colReason: 'Reason', colBannedAt: 'Banned at', colUntil: 'Until',
     // 文件
     dropTitle: 'Drop files here or click to upload',
-    dropDesc: 'Max 100 MB per file (Workers limit) · Stored directly in R2',
+    dropDesc: 'Max {mb} MB per file (enforced server-side) · Stored directly in R2',
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', dlFile: 'Download', del: 'Delete',
     newFolder: 'New Folder', folderNamePh: 'Folder name', folderNameEmpty: 'Folder name is required',
     folderFilterAll: 'All Locations', folderFilterRoot: 'Root', colFolder: 'Location', uploadToRoot: 'Root',
     uploadTo: 'Upload to: {where}', deleteFolder: 'Delete Folder', deleteFolderT: 'Delete Folder', deleteFolderD: 'Delete the empty folder "{name}"? Only folders without files or subfolders can be deleted.',
     folderDeleted: 'Folder deleted', folderCreatedToast: 'Folder "{name}" created',
-    tooLarge: '"{name}" exceeds the 100 MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
+    tooLarge: '"{name}" exceeds the {mb} MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
@@ -766,6 +770,10 @@ const I18N = {
     // 设置
     siteName: 'Site Name', siteNameD: 'Shown on the share page and console title',
     trafficLimit: 'Monthly Traffic Quota (GB)',
+    maxUpload: 'Per-file Limit (MB)',
+    maxUploadD: 'The server now really rejects oversized uploads (413) instead of only warning in the UI. 0 = limited only by the Workers 100 MB request-body cap.',
+    storageQuota: 'Storage Quota (MB)',
+    storageQuotaD: 'Uploads that would exceed the quota are refused and rolled back (507). 0 = unlimited.',
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
     resetTraffic: 'Reset Monthly Traffic', resetTrafficD: 'Zero out used traffic and resume downloads immediately', reset: 'Reset',
     perIp: 'Max Downloads per IP',
@@ -1113,6 +1121,7 @@ function closeModal(){ $('#modal')?.remove(); }
 
 /* ═══════════ 登录视图（支持 2FA 两阶段） ═══════════ */
 let siteTitle = 'cloud-r2pan';
+let maxUploadMb = 100; // 服务端下发的单文件上限，登录后刷新
 let loginStage = 'password'; // 'password' | '2fa' | 'recovery'
 let savedLoginKey = ''; // 第一阶段输入的 admin key
 
@@ -1249,6 +1258,7 @@ async function showApp(){
   try{
     const s = await api('/api/admin/session');
     siteTitle = s.site_title || siteTitle;
+    if (s.max_upload_mb) maxUploadMb = s.max_upload_mb;
   }catch{}
   document.title = t('docTitle', {site: siteTitle});
   $('#app').innerHTML = `
@@ -1443,7 +1453,7 @@ async function loadFiles(){
     <div class="dropzone" id="dropzone">
       <div class="icon">☁️</div>
       <div class="t">${esc(t('dropTitle'))}</div>
-      <div class="d">${esc(t('dropDesc'))}</div>
+      <div class="d">${esc(t('dropDesc', { mb: maxUploadMb }))}</div>
       <input type="file" id="file-input" multiple hidden>
     </div>
     <div id="upload-list"></div>
@@ -1572,7 +1582,7 @@ function openNewFolderModal(){
 
 function uploadFiles(files){
   for(const file of files){
-    if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name: file.name}), 'err'); continue; }
+    if(maxUploadMb > 0 && file.size > maxUploadMb * 1024 * 1024){ toast(t('tooLarge', {name: file.name, mb: maxUploadMb}), 'err'); continue; }
     const item = document.createElement('div');
     item.className = 'upload-item glass';
     item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
@@ -2482,6 +2492,16 @@ async function loadSettings(){
     </div>
     <div class="glass group">
       <div class="row">
+        <div class="info"><div class="t">📦 ${esc(t('maxUpload'))}</div><div class="d">${esc(t('maxUploadD'))}</div></div>
+        <input type="number" id="st-max-upload" min="1" max="100" step="1" value="${s.max_upload_mb ?? 100}">
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">🗄️ ${esc(t('storageQuota'))}</div><div class="d">${esc(t('storageQuotaD'))}</div></div>
+        <input type="number" id="st-quota" min="0" step="100" value="${s.storage_quota_mb ?? 0}">
+      </div>
+    </div>
+    <div class="glass group">
+      <div class="row">
         <div class="info"><div class="t">🔁 ${esc(t('perIp'))}</div>
         <div class="d">${esc(t('perIpD'))}</div></div>
         <input type="number" id="st-perip" min="0" value="${s.max_downloads_per_ip}">
@@ -2675,6 +2695,8 @@ async function loadSettings(){
     const body = {
       site_title: $('#st-title').value.trim(),
       traffic_limit_gb: Number($('#st-limit').value) || 0,
+      max_upload_mb: Number($('#st-max-upload').value) || 0,
+      storage_quota_mb: Number($('#st-quota').value) || 0,
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,
       auto_ban: $('#st-autoban').checked,
@@ -3028,6 +3050,7 @@ function showRecoveryCodes(codes){
   try{
     const s = await api('/api/admin/session');
     siteTitle = s.site_title || siteTitle;
+    if (s.max_upload_mb) maxUploadMb = s.max_upload_mb;
     showApp();
   }catch{
     // api() 内部已对 401 调用 showLogin() 并 throw，这里静默兜底即可

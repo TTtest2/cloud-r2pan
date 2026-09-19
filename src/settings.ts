@@ -22,7 +22,12 @@ export function invalidateSettingsCache(): void {
 
 /** 可调参数（均可在管理后台修改） */
 export interface Settings {
+  /** 站点标题 */
   siteTitle: string;
+  /** 单个文件上传上限（字节），0 = 只受 Workers 请求体限制约束 */
+  maxUploadBytes: number;
+  /** 网盘总存储配额（字节），0 = 不限 */
+  storageQuotaBytes: number;
   /** 月度流量限额（字节），0 = 不限 */
   trafficLimitBytes: number;
   /** 本月已用流量（字节） */
@@ -129,6 +134,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   siteTitle: "cloud-r2pan",
+  maxUploadBytes: 100 * 1024 ** 2, // 100 MB，与 Workers 请求体上限一致
+  storageQuotaBytes: 0,            // 0 = 不限
   trafficLimitBytes: 10 * 1024 ** 3, // 10 GB
   trafficUsedBytes: 0,
   trafficMonth: "",
@@ -206,6 +213,8 @@ export async function getSettings(env: Env): Promise<Settings> {
 
   const result: Settings = {
     siteTitle: map.get("site_title") ?? DEFAULT_SETTINGS.siteTitle,
+    maxUploadBytes: toInt(map.get("max_upload_mb"), DEFAULT_SETTINGS.maxUploadBytes / 1024 ** 2) * 1024 ** 2,
+    storageQuotaBytes: toInt(map.get("storage_quota_mb"), 0) * 1024 ** 2,
     trafficLimitBytes: toInt(map.get("traffic_limit_bytes"), DEFAULT_SETTINGS.trafficLimitBytes),
     trafficUsedBytes,
     trafficMonth,
