@@ -108,6 +108,23 @@ export interface Settings {
    */
   trashRetentionDays: number;
 
+  // ═══════ 取件码投递 ═══════
+  /**
+   * 是否开放"投码取件"。关掉 = 投递入口不可用，**已发出去的取件码也一律取不到**
+   * （码本身就是凭据，所以这个开关同时是一键作废所有码的总闸）。
+   */
+  pickupEnabled: boolean;
+  /** 匿名投递单文件上限（字节）；0 = 沿用 maxUploadBytes。永远不超过 Workers 100 MB 请求体 */
+  pickupMaxUploadBytes: number;
+  /** 投递区总占用上限（字节），0 = 不限。这是防止被人当免费网盘刷爆 R2 的那道闸 */
+  pickupTotalQuotaBytes: number;
+  /** 单个 IP 一天能投几件，0 = 不限 */
+  pickupPerIpDailyCount: number;
+  /** 单个 IP 一天能投多少字节，0 = 不限 */
+  pickupPerIpDailyBytes: number;
+  /** 投递默认保留天数（到期由 cron 连对象一起清掉） */
+  pickupRetentionDays: number;
+
   // ═══════ 存储后端（R2 / S3 兼容） ═══════
   /**
    * 存储后端选择：
@@ -175,6 +192,13 @@ export const DEFAULT_SETTINGS: Settings = {
   codesFloatingButtonPosition: "top-right",
   // 回收站 —— 默认留 7 天；对象仍在 R2 里占存储配额，到期由 cron 彻底删除
   trashRetentionDays: 7,
+  // 取件码投递 —— 默认开，但四道配额都压得很小（免费档 R2 只有 10 GB）
+  pickupEnabled: true,
+  pickupMaxUploadBytes: 100 * 1024 ** 2,
+  pickupTotalQuotaBytes: 1024 * 1024 ** 2,
+  pickupPerIpDailyCount: 5,
+  pickupPerIpDailyBytes: 1024 * 1024 ** 2,
+  pickupRetentionDays: 7,
   // 存储后端 —— 默认 R2（向后兼容）
   storageProvider: "r2",
   s3Endpoint: null,
@@ -255,6 +279,13 @@ export async function getSettings(env: Env): Promise<Settings> {
     codesFloatingButtonPosition: (map.get("codes_floating_button_position") ?? DEFAULT_SETTINGS.codesFloatingButtonPosition) as Settings["codesFloatingButtonPosition"],
     // 回收站保留天数（上限 90 天：软删除期间对象照样占 R2 存储）
     trashRetentionDays: Math.min(90, toInt(map.get("trash_retention_days"), DEFAULT_SETTINGS.trashRetentionDays)),
+    pickupEnabled: (map.get("pickup_enabled") ?? "1") === "1",
+    // 单件上限不可能超过 Workers 的请求体上限，写更大也只是自我安慰
+    pickupMaxUploadBytes: Math.min(100, toInt(map.get("pickup_max_upload_mb"), DEFAULT_SETTINGS.pickupMaxUploadBytes / 1024 ** 2)) * 1024 ** 2,
+    pickupTotalQuotaBytes: toInt(map.get("pickup_total_quota_mb"), DEFAULT_SETTINGS.pickupTotalQuotaBytes / 1024 ** 2) * 1024 ** 2,
+    pickupPerIpDailyCount: toInt(map.get("pickup_per_ip_daily_count"), DEFAULT_SETTINGS.pickupPerIpDailyCount),
+    pickupPerIpDailyBytes: toInt(map.get("pickup_per_ip_daily_mb"), DEFAULT_SETTINGS.pickupPerIpDailyBytes / 1024 ** 2) * 1024 ** 2,
+    pickupRetentionDays: Math.min(90, toInt(map.get("pickup_retention_days"), DEFAULT_SETTINGS.pickupRetentionDays)),
     // 存储后端
     storageProvider: (map.get("storage_provider") ?? "r2") as Settings["storageProvider"],
     s3Endpoint: map.get("s3_endpoint") ?? null,

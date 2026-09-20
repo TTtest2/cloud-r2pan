@@ -13,6 +13,7 @@ import {
 import { findCodeByString, formatCodeStatus, checkCodeUsable, isCodeLenientFormat } from "./codes";
 import { clientIp, rateLimit, rateLimitRetryAfter } from "./auth";
 import { parseMarketParams, queryMarket } from "./market";
+import { handlePickupClaim, handlePickupDownload, handlePickupDrop } from "./pickup";
 import { runScheduledCleanup } from "./cron";
 
 export default {
@@ -119,6 +120,27 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
       message: check.message,
       status,
     });
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // 取件码投递 —— 码既是地址也是凭据（详见 src/pickup.ts 头注释）
+  //   POST /api/pickup            投件，回一枚取件码
+  //   POST /api/pickup/claim      输码 → 文件信息 + 短时效下载票据
+  //   GET  /api/pickup/download   票据 → 走与分享链接同一条闸门流水线
+  // ══════════════════════════════════════════════════════════════
+  if (path === "/api/pickup" && req.method === "POST") {
+    await ensureSchema(env);
+    return handlePickupDrop(req, env, ctx);
+  }
+  if (path === "/api/pickup/claim") {
+    await ensureSchema(env);
+    if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+    return handlePickupClaim(req, env);
+  }
+  if (path === "/api/pickup/download") {
+    await ensureSchema(env);
+    if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method Not Allowed", { status: 405 });
+    return handlePickupDownload(req, env, ctx);
   }
 
   // ══════════════════════════════════════════════════════════════

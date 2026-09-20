@@ -399,6 +399,23 @@ export async function handleDownload(
   ctx: ExecutionContext,
   token: string
 ): Promise<Response> {
+  return serveShareDownload(req, env, ctx, token);
+}
+
+/**
+ * 闸门流水线本体。**长链接下载**与**取件码下载**共用这一条，不再各写一份：
+ * 顺序即语义，两条路必须同样受封禁/有效期/次数/流量/单 IP 重复的约束。
+ *
+ * prepared 由取件码入口给出：行已经按码查出来（码本身就是凭据）。投递行没有
+ * 访问密码，所以那道闸对它是直通；万一某条形制同时挂了码和口令，那就两个都要。
+ */
+export async function serveShareDownload(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  token: string,
+  prepared?: { row: ShareEntry }
+): Promise<Response> {
   const ip = clientIp(req);
   const ua = req.headers.get("user-agent") ?? "";
   const country = req.headers.get("cf-ipcountry") ?? "";
@@ -412,7 +429,7 @@ export async function handleDownload(
     activationCode ? findCodeByString(env, activationCode) : Promise.resolve(null),
     env.db.prepare("SELECT reason, expires_at FROM banned_ips WHERE ip = ?1")
       .bind(ip).first<{ reason: string | null; expires_at: number | null }>(),
-    getShareEntry(env, token),
+    prepared ? Promise.resolve(prepared.row) : getShareEntry(env, token),
   ]);
 
   if (activationCode && codeRow) {

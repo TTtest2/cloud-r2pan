@@ -244,6 +244,20 @@ const MIGRATION_STATEMENTS: string[] = [
   "CREATE INDEX IF NOT EXISTS idx_files_sha ON files(sha256) WHERE sha256 IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS idx_files_etag ON files(etag) WHERE etag IS NOT NULL",
   "ALTER TABLE upload_sessions ADD COLUMN sha256 TEXT",
+  // ═══════════════ 取件码投递 ═══════════════
+  // 取件码同时负责"找"和"拦"：收件人只输码即可取件，不需要那条长链接。
+  // 所以码就是凭据 —— 库里只存可寻址的 keyed hash（HMAC(admin, 归一化码)）
+  // 与一份给后台回看用的密文，明文永不落库。
+  "ALTER TABLE shares ADD COLUMN pickup_hash TEXT",
+  // 唯一索引既保证两个投件不会撞码，也让"撞码"变成一次可捕获的插入失败 → 重新生成
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_pickup ON shares(pickup_hash) WHERE pickup_hash IS NOT NULL",
+  "ALTER TABLE shares ADD COLUMN pickup_cipher TEXT",
+  "ALTER TABLE shares ADD COLUMN pickup_claims INTEGER NOT NULL DEFAULT 0",
+  // origin='drop' = 匿名投递进来的，不属于网盘正常内容流：不进市场、不派生直链、
+  // 单独在后台"投递箱"里列示与回收；origin_ip 只有 drop 会写。
+  "ALTER TABLE shares ADD COLUMN origin TEXT NOT NULL DEFAULT 'admin'",
+  "ALTER TABLE shares ADD COLUMN origin_ip TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_shares_origin ON shares(origin, expires_at)",
 ];
 
 /**
