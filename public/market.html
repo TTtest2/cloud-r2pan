@@ -144,6 +144,7 @@ footer a{color:#2563eb;text-decoration:none}
         <h1 id="brand-title"></h1>
         <div class="subtitle" id="brand-subtitle"></div>
       </div>
+      <a class="lang-btn" id="pickup-link" href="/pickup" style="text-decoration:none"></a>
       <button class="lang-btn" id="lang-toggle"></button>
     </div>
     <div class="toolbar">
@@ -185,6 +186,7 @@ const I18N = {
     pageTitle: '下载市场 · cloud-r2pan',
     brandTitle: '下载市场',
     brandSubtitle: '发现、分享、下载',
+    pickupLink: '📮 取件码取件',
     searchPlaceholder: '搜索文件名、标题或描述…',
     sortHot: '🔥 热度最高',
     sortNewest: '🆕 最新发布',
@@ -224,6 +226,7 @@ const I18N = {
     pageTitle: 'Marketplace · cloud-r2pan',
     brandTitle: 'Marketplace',
     brandSubtitle: 'Discover · Share · Download',
+    pickupLink: '📮 Pickup code',
     searchPlaceholder: 'Search file name, title or description…',
     sortHot: '🔥 Trending',
     sortNewest: '🆕 Newest',
@@ -309,6 +312,7 @@ $('#stats-perpage-prefix').textContent = t('statsPerpagePrefix');
 $('#stats-perpage-suffix').textContent = t('statsPerpageSuffix');
 $('#footer-text').innerHTML = t('footerText');
 $('#lang-toggle').textContent = t('switchTo');
+$('#pickup-link').textContent = t('pickupLink');
 $('#lang-toggle').onclick = () => {
   try { localStorage.setItem('cd_lang', LANG === 'zh' ? 'en' : 'zh'); } catch {}
   location.reload();

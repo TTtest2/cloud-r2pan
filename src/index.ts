@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { ensureSchema } from "./db";
 import { handleAdminApi } from "./admin";
 import { handleDownload, handleDirectDownload, handleShareInfo, handleShareChildren, handleVerify } from "./public";
-import { serveAdminPage, serveSharePage, serveMarketPage, errorPage } from "./pages";
+import { serveAdminPage, serveSharePage, serveMarketPage, servePickupPage, errorPage } from "./pages";
 import {
   handleOAuthStart,
   handleOAuthCallback,
@@ -13,7 +13,7 @@ import {
 import { findCodeByString, formatCodeStatus, checkCodeUsable, isCodeLenientFormat } from "./codes";
 import { clientIp, rateLimit, rateLimitRetryAfter } from "./auth";
 import { parseMarketParams, queryMarket } from "./market";
-import { handlePickupClaim, handlePickupDownload, handlePickupDrop } from "./pickup";
+import { handlePickupClaim, handlePickupDownload, handlePickupDrop, handlePickupStatus } from "./pickup";
 import { runScheduledCleanup } from "./cron";
 
 export default {
@@ -128,6 +128,10 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
   //   POST /api/pickup/claim      输码 → 文件信息 + 短时效下载票据
   //   GET  /api/pickup/download   票据 → 走与分享链接同一条闸门流水线
   // ══════════════════════════════════════════════════════════════
+  if (path === "/api/pickup/status" && req.method === "GET") {
+    await ensureSchema(env);
+    return handlePickupStatus(req, env);
+  }
   if (path === "/api/pickup" && req.method === "POST") {
     await ensureSchema(env);
     return handlePickupDrop(req, env, ctx);
@@ -149,6 +153,10 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
   // 市场 HTML 页面
   if ((path === "/market" || path === "/market/") && (req.method === "GET" || req.method === "HEAD")) {
     return serveMarketPage(req);
+  }
+  // 取件页 HTML
+  if ((path === "/pickup" || path === "/pickup/") && (req.method === "GET" || req.method === "HEAD")) {
+    return servePickupPage(req);
   }
   // 市场搜索/排序 API（SQL 在 src/market.ts，便于单测）
   if (path === "/api/market" && req.method === "GET") {

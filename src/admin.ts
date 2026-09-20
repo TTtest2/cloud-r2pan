@@ -298,9 +298,9 @@ export async function handleAdminApi(
         env.db
           .prepare("SELECT COALESCE(SUM(s), 0) AS bytes FROM (SELECT MIN(size) AS s FROM files WHERE deleted_at IS NOT NULL GROUP BY key)")
           .first<{ bytes: number }>(),
-        env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>(),
+        env.db.prepare("SELECT COUNT(*) AS c FROM shares WHERE origin IS NULL OR origin <> 'drop'").first<{ c: number }>(),
         env.db.prepare(
-          "SELECT COUNT(*) AS c FROM shares WHERE revoked = 0 AND (expires_at IS NULL OR expires_at > ?1) AND (max_downloads IS NULL OR download_count < max_downloads)"
+          "SELECT COUNT(*) AS c FROM shares WHERE (origin IS NULL OR origin <> 'drop') AND revoked = 0 AND (expires_at IS NULL OR expires_at > ?1) AND (max_downloads IS NULL OR download_count < max_downloads)"
         )
           .bind(Date.now())
           .first<{ c: number }>(),
@@ -860,7 +860,7 @@ export async function handleAdminApi(
     const sp = new URL(req.url).searchParams;
     const limit = Math.min(500, Math.max(1, Number(sp.get("limit")) || 100));
     const offset = Math.max(0, Number(sp.get("offset")) || 0);
-    const totalRow = await env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>();
+    const totalRow = await env.db.prepare("SELECT COUNT(*) AS c FROM shares WHERE origin IS NULL OR origin <> 'drop'").first<{ c: number }>();
     const { results } = await env.db.prepare(
       `SELECT s.id, s.file_id, s.folder_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked,
               s.password_hash, s.download_name, s.direct_id,
@@ -870,11 +870,12 @@ export async function handleAdminApi(
        FROM shares s
        LEFT JOIN files f ON f.id = s.file_id
        LEFT JOIN folders fo ON fo.id = s.folder_id
+       WHERE s.origin IS NULL OR s.origin <> 'drop'
        ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2`
     ).bind(limit, offset).all();
     const now = Date.now();
     // 这个功能上线前创建的分享没有直链，这里按需补建（有密码的不补：直链等于绕过密码；
-    // 目录分享也不补 —— /d/:id 指向的是单个文件）
+    // 目录分享也不补 —— /d/:id 指向的是单个文件；投递行更不补 —— 那等于绕过取件码）
     const backfill = (results ?? []).filter((s: any) =>
       !s.direct_id && !s.folder_id && !s.password_hash && !s.revoked &&
       !(s.expires_at && s.expires_at < now) &&
@@ -929,9 +930,10 @@ export async function handleAdminApi(
   // ── 清理失效分享（过期 / 已撤销 / 达上限） + 孤儿 files + 孤儿 R2 对象 ──
   if (path === "/api/admin/shares/cleanup" && method === "POST") {
     const now = Date.now();
-    // 1. 删除失效 shares
+    // 1. 删除失效 shares（投递行不在这里 —— 只删分享行会把投件文件变成看不见
+    //    却仍在计费的孤儿；它的行与对象由 cron 的到期投递那一步一起清）
     const deleted = await env.db.prepare(
-      "DELETE FROM shares WHERE revoked = 1 OR (expires_at IS NOT NULL AND expires_at < ?1) OR (max_downloads IS NOT NULL AND download_count >= max_downloads)"
+      "DELETE FROM shares WHERE (origin IS NULL OR origin <> 'drop') AND (revoked = 1 OR (expires_at IS NOT NULL AND expires_at < ?1) OR (max_downloads IS NOT NULL AND download_count >= max_downloads))"
     )
       .bind(now)
       .run();
@@ -1130,7 +1132,7 @@ export async function handleAdminApi(
     const where = q
       ? ` AND (f.name LIKE ?1 OR COALESCE(s.market_title, '') LIKE ?1 OR COALESCE(s.market_desc, '') LIKE ?1)`
       : "";
-    const base = `FROM shares s JOIN files f ON f.id = s.file_id WHERE s.revoked = 0${filterOnly}${where}`;
+    const base = `FROM shares s JOIN files f ON f.id = s.file_id WHERE s.revoked = 0 AND (s.origin IS NULL OR s.origin <> 'drop')${filterOnly}${where}`;
     const countRow: any = await env.db.prepare(`SELECT COUNT(*) AS c ${base}`).bind(...(q ? [`%${q}%`] : [])).first();
     const total = countRow?.c ?? 0;
     const { results }: any = await env.db.prepare(

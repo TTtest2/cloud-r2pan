@@ -21,7 +21,7 @@ import { createFolder, getFolderTree, invalidateFolderTree } from "./folders";
 import { getStorageProvider as storage } from "./storage";
 import { declaredSize, formatMb, postUploadRejection, preUploadRejection } from "./limits";
 import { errorPage, json } from "./pages";
-import { isTurnstileEnabled, serveShareDownload, verifyTurnstileToken } from "./public";
+import { getTurnstileInfo, isTurnstileEnabled, serveShareDownload, verifyTurnstileToken } from "./public";
 
 /** 去掉 0/o/1/i/l 的人工可抄字符集 */
 const CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
@@ -276,6 +276,21 @@ export async function handlePickupDrop(req: Request, env: Env, ctx: ExecutionCon
     one_shot: once,
     pickup_url: "/pickup",
   }, { status: 201 });
+}
+
+/** 取件页加载时先问一句：功能开不开、要不要人机验证、限额是多少（都是公开信息） */
+export async function handlePickupStatus(req: Request, env: Env): Promise<Response> {
+  const s = await getSettings(env);
+  if (!s.pickupEnabled) return json({ error: "not_available" }, { status: 404 });
+  return json({
+    ok: true,
+    max_upload_mb: formatMb(s.pickupMaxUploadBytes),
+    retention_days: s.pickupRetentionDays,
+    per_ip_daily_count: s.pickupPerIpDailyCount,
+    per_ip_daily_mb: formatMb(s.pickupPerIpDailyBytes),
+    total_quota_mb: formatMb(s.pickupTotalQuotaBytes),
+    turnstile_sitekey: (await isTurnstileEnabled(env, s)) ? getTurnstileInfo(env, s).sitekey : null,
+  });
 }
 
 /* ═══════════ 按码寻址的三处共用查询 ═══════════ */

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>取件 · cloud-r2pan</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{min-height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  color:#1d2433;background:#f5f6f8;
+  padding:24px 20px 80px;min-height:100vh;min-height:100dvh;
+}
+@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.wrap{max-width:560px;margin:0 auto;position:relative}
+header{margin-bottom:28px;animation:rise .5s cubic-bezier(.22,1.2,.36,1) both;display:flex;align-items:center;gap:12px}
+.brand-icon{width:44px;height:44px;border-radius:14px;background:#fff;border:1px solid rgba(24,34,58,.10);display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 2px 8px rgba(24,34,58,.08)}
+h1{font-size:24px;font-weight:700;letter-spacing:-.02em;background:linear-gradient(180deg,#1d2433,#5a6885);-webkit-background-clip:text;background-clip:text;color:transparent}
+.subtitle{font-size:13px;color:rgba(29,36,51,.62);margin-top:3px}
+.lang-btn{margin-left:auto;padding:4px 13px;border-radius:11px;border:1px solid rgba(24,34,58,.10);background:#fff;font-size:12px;cursor:pointer}
+.card{
+  background:#fff;border:1px solid rgba(24,34,58,.10);border-radius:24px;
+  padding:24px;box-shadow:0 12px 32px rgba(24,34,58,.08);
+  animation:rise .5s cubic-bezier(.22,1.2,.36,1) both;
+}
+.card + .card{margin-top:18px}
+.card h2{font-size:16px;font-weight:650;margin-bottom:4px}
+.card p{font-size:13px;line-height:1.6;color:rgba(29,36,51,.62);margin-bottom:14px}
+.code-row{display:flex;gap:10px}
+.code-input{
+  flex:1;padding:14px 16px;border-radius:16px;background:#f3f5f9;
+  border:1px solid rgba(24,34,58,.10);font-size:20px;letter-spacing:.14em;
+  font-family:ui-monospace,"SF Mono",Menlo,monospace;text-transform:lowercase;outline:none;
+}
+.code-input:focus{border-color:#2f6fed;box-shadow:0 0 0 4px rgba(47,111,237,.15)}
+.btn{
+  padding:13px 20px;border-radius:16px;border:1px solid rgba(24,34,58,.10);background:#f3f5f9;
+  color:#1d2433;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;
+}
+.btn.primary{background:#2f6fed;border-color:#2f6fed;color:#fff}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.msg{font-size:13px;margin-top:12px;min-height:18px;line-height:1.6}
+.msg.err{color:#c33a3a}
+.msg.ok{color:#1f8b4c}
+.result{margin-top:16px;padding:16px;border-radius:18px;background:#f7f9fc;border:1px solid rgba(24,34,58,.08);display:none}
+.result.show{display:block}
+.file-name{font-size:15px;font-weight:600;word-break:break-all}
+.file-meta{font-size:12.5px;color:rgba(29,36,51,.6);margin:4px 0 14px}
+.drop{
+  border:1.5px dashed rgba(47,111,237,.4);border-radius:18px;background:#f8faff;
+  padding:26px 18px;text-align:center;cursor:pointer;transition:background .2s,border-color .2s;
+}
+.drop:hover,.drop.on{background:#eef4ff;border-color:#2f6fed}
+.drop .ic{font-size:30px}
+.drop .t1{font-size:14px;font-weight:600;margin-top:8px}
+.drop .t2{font-size:12.5px;color:rgba(29,36,51,.6);margin-top:4px}
+.big-code{
+  font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:30px;letter-spacing:.1em;
+  background:#eef4ff;border:1px solid rgba(47,111,237,.25);border-radius:16px;padding:14px;text-align:center;
+}
+.bar{height:6px;border-radius:3px;background:#e6eaf0;overflow:hidden;margin-top:12px;display:none}
+.bar.show{display:block}
+.bar i{display:block;height:100%;width:0;background:#2f6fed;transition:width .2s}
+.opt{display:flex;align-items:center;gap:8px;font-size:13px;color:rgba(29,36,51,.7);margin-top:12px}
+.links{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.note{font-size:12px;color:rgba(29,36,51,.5);line-height:1.7;margin-top:14px}
+footer{text-align:center;font-size:12px;color:rgba(29,36,51,.45);margin-top:26px}
+a{color:#2f6fed}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand-icon">📮</div>
+    <div>
+      <h1 id="title">取件码取件</h1>
+      <div class="subtitle" id="subtitle">输入对方给你的取件码，直接下载文件</div>
+    </div>
+    <button class="lang-btn" id="lang-toggle">EN</button>
+  </header>
+
+  <section class="card">
+    <h2 id="claimTitle">我有取件码</h2>
+    <p id="claimHelp">不区分大小写，也不用记链接 —— 只要这一枚码。</p>
+    <div class="code-row">
+      <input class="code-input" id="code" inputmode="latin" autocomplete="off" spellcheck="false" maxlength="12" placeholder="ab3d-k9fq">
+      <button class="btn primary" id="claim" disabled>取件</button>
+    </div>
+    <div class="msg" id="claimMsg"></div>
+    <div class="result" id="claimResult">
+      <div class="file-name" id="rName"></div>
+      <div class="file-meta" id="rMeta"></div>
+      <div class="links">
+        <button class="btn primary" id="rDown">⬇ 下载文件</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 id="dropTitle">我要投递文件</h2>
+    <p id="dropHelp">上传后得到一枚取件码，把码告诉对方即可。文件在保留期内可取，到期自动清除。</p>
+    <div class="drop" id="drop">
+      <div class="ic">☁️</div>
+      <div class="t1" id="dropCta">拖拽文件到此处，或点击选择</div>
+      <div class="t2" id="dropLimit">单件上限 100 MB</div>
+    </div>
+    <input type="file" id="file" hidden>
+    <label class="opt"><input type="checkbox" id="once"> <span id="onceText">一次一取（对方取完即失效）</span></label>
+    <div class="bar" id="bar"><i></i></div>
+    <div class="msg" id="dropMsg"></div>
+    <div class="result" id="dropResult">
+      <div class="file-name" id="dName"></div>
+      <div class="file-meta" id="dMeta"></div>
+      <div class="big-code" id="dCode"></div>
+      <div class="links">
+        <button class="btn" id="copy">复制取件码</button>
+      </div>
+      <div class="note" id="dNote"></div>
+    </div>
+  </section>
+
+  <footer>Powered by cloud-r2pan</footer>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const I18N = {
+  zh: {
+    title: "取件码取件", subtitle: "输入对方给你的取件码，直接下载文件",
+    claimTitle: "我有取件码", claimHelp: "不区分大小写，也不用记链接 —— 只要这一枚码。",
+    claim: "取件", claiming: "查询中…", downloading: "⬇ 下载文件",
+    dropTitle: "我要投递文件",
+    dropHelp: "上传后得到一枚取件码，把码告诉对方即可。文件在保留期内可取，到期自动清除。",
+    dropCta: "拖拽文件到此处，或点击选择", uploading: "上传中…",
+    once: "一次一取（对方取完即失效）",
+    copy: "复制取件码", copied: "已复制",
+    expires: "有效期至", size: "大小", taken: "已取次数",
+    dNote: "把这枚码告诉对方就行：打开本站的取件页，输入码即可下载。",
+    closed: "取件功能当前未开放，请联系站点管理员。",
+    dropClosed: "投递功能已关闭。",
+    err: {
+      bad_code: "取件码格式不对：应该是 8 位字母数字。",
+      unknown: "取件码无效，或已过期、已被取走。",
+      too_many: "尝试太频繁，请稍后再试。",
+      banned: "你的访问已被本站封禁。",
+      turnstile_required: "请先通过人机验证。",
+      turnstile_failed: "人机验证未通过，请重试。",
+      too_large: "文件超过单件上限。",
+      quota_exceeded: "投递区已满了，暂时收不下更多文件。",
+      ip_daily_count: "你今天投递的件数已达上限。",
+      ip_daily_bytes: "你今天投递的总量已达上限。",
+      empty_body: "没有收到文件内容。",
+      storage_failed: "存储写入失败，请稍后重试。",
+      db_failed: "服务器暂时无法处理，请稍后重试。",
+      network: "网络中断，上传未完成。",
+    },
+  },
+  en: {
+    title: "Pickup code", subtitle: "Enter the code you were given to fetch the file",
+    claimTitle: "I have a code", claimHelp: "Case-insensitive, and no long link to keep — just this code.",
+    claim: "Pick up", claiming: "Checking…", downloading: "⬇ Download",
+    dropTitle: "Drop a file",
+    dropHelp: "Upload it and you get a pickup code to hand over. Files stay retrievable until the retention period ends.",
+    dropCta: "Drag a file here, or click to choose", uploading: "Uploading…",
+    once: "One-shot (expires after the first pickup)",
+    copy: "Copy code", copied: "Copied",
+    expires: "Valid until", size: "Size", taken: "Times taken",
+    dNote: "Tell the recipient this code: open this page, enter it, download.",
+    closed: "Pickup is currently disabled. Please contact the site admin.",
+    dropClosed: "File dropping is turned off.",
+    err: {
+      bad_code: "That is not a valid code: expect 8 letters or digits.",
+      unknown: "Invalid code, or it has expired / already been taken.",
+      too_many: "Too many attempts. Please wait a moment.",
+      banned: "Your access has been blocked by this site.",
+      turnstile_required: "Please complete the human check first.",
+      turnstile_failed: "Human verification failed, please retry.",
+      too_large: "The file is over the per-item limit.",
+      quota_exceeded: "The drop area is full; nothing else fits right now.",
+      ip_daily_count: "You reached today's upload count for this network.",
+      ip_daily_bytes: "You reached today's upload volume for this network.",
+      empty_body: "No file content received.",
+      storage_failed: "Storage write failed, please retry later.",
+      db_failed: "The server could not finish, please retry later.",
+      network: "Connection lost; upload did not finish.",
+    },
+  },
+};
+let LANG = "zh";
+try { LANG = localStorage.getItem("cd_lang") || (navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en"); } catch {}
+const t = (k) => (I18N[LANG][k] ?? I18N.zh[k] ?? k);
+const et = (k) => (I18N[LANG].err[k] ?? t("unknown"));
+
+function fmtSize(n) {
+  if (!(n >= 0)) return "-";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+}
+function fmtDate(ms) { return ms ? new Date(ms).toLocaleString(LANG === "zh" ? "zh-CN" : undefined) : "-"; }
+function setMsg(el, text, kind) {
+  el.textContent = text || "";
+  el.className = "msg " + (kind || "");
+}
+
+function renderLimits() {
+  if (!STATUS) return;
+  $("#dropLimit").textContent = (LANG === "zh" ? "单件上限 " : "Max ") + STATUS.max_upload_mb + " MB · "
+    + (LANG === "zh" ? "保留 " : "kept ") + STATUS.retention_days + (LANG === "zh" ? " 天" : "d");
+}
+
+function applyI18n() {
+  document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
+  document.title = t("title") + " · cloud-r2pan";
+  $("#title").textContent = t("title");
+  $("#subtitle").textContent = t("subtitle");
+  $("#claimTitle").textContent = t("claimTitle");
+  $("#claimHelp").textContent = t("claimHelp");
+  $("#dropTitle").textContent = t("dropTitle");
+  $("#dropHelp").textContent = t("dropHelp");
+  $("#dropCta").textContent = t("dropCta");
+  $("#onceText").textContent = t("once");
+  $("#copy").textContent = t("copy");
+  $("#rDown").textContent = t("downloading");
+  $("#lang-toggle").textContent = LANG === "zh" ? "EN" : "中";
+  renderLimits();
+  syncClaimBtn();
+}
+
+const norm = (v) => String(v || "").toLowerCase().replace(/[\s\-_]/g, "");
+let STATUS = null;
+let TS_TOKEN = null;
+
+function syncClaimBtn() {
+  $("#claim").disabled = norm($("#code").value).length !== 8 || $("#claim").dataset.busy === "1";
+}
+
+async function doClaim(auto) {
+  const code = norm($("#code").value);
+  const msg = $("#claimMsg");
+  if (code.length !== 8) { setMsg(msg, t("err").bad_code ?? et("bad_code"), "err"); return; }
+  $("#claim").dataset.busy = "1";
+  $("#claim").disabled = true;
+  $("#claim").textContent = t("claiming");
+  setMsg(msg, "");
+  $("#claimResult").classList.remove("show");
+  try {
+    const r = await fetch("/api/pickup/claim", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }),
+    });
+    const j = await r.json().catch(() => null);
+    if (r.status === 429) setMsg(msg, et("too_many"), "err");
+    else if (!r.ok || !j || !j.ok) setMsg(msg, et("unknown"), "err");
+    else {
+      $("#rName").textContent = j.name;
+      $("#rMeta").textContent = t("size") + " " + fmtSize(j.size) + " · " + t("expires") + " " + fmtDate(j.expires_at) + (j.one_shot ? " · " + t("once") : "");
+      $("#claimResult").classList.add("show");
+      $("#rDown").onclick = () => { location.href = j.download_url + encodeURIComponent(j.t); };
+    }
+  } catch { setMsg(msg, et("network"), "err"); }
+  $("#claim").dataset.busy = "";
+  $("#claim").textContent = t("claim");
+  syncClaimBtn();
+  if (auto && $("#claimMsg").textContent) $("#claimMsg").textContent = "";
+}
+
+function renderTurnstile(sitekey) {
+  const holder = document.createElement("div");
+  holder.id = "ts";
+  holder.style.marginTop = "12px";
+  $(".card:nth-of-type(3)").insertBefore(holder, $("#bar"));
+  const s = document.createElement("script");
+  s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+  s.onload = () => {
+    window.turnstile.render("#ts", {
+      sitekey, theme: "light",
+      callback: (token) => { TS_TOKEN = token; },
+      "expired-callback": () => { TS_TOKEN = null; },
+      "error-callback": () => { TS_TOKEN = null; },
+    });
+  };
+  document.head.appendChild(s);
+}
+
+async function boot() {
+  applyI18n();
+  try {
+    const r = await fetch("/api/pickup/status");
+    if (!r.ok) {
+      $("#drop").style.display = "none";
+      setMsg($("#dropMsg"), t("dropClosed"), "err");
+      return;
+    }
+    STATUS = await r.json();
+    renderLimits();
+    if (STATUS.turnstile_sitekey && !window.__ts) { window.__ts = true; renderTurnstile(STATUS.turnstile_sitekey); }
+  } catch { /* 拿不到状态也让输码取件可用 */ }
+}
+
+function upload(file) {
+  const msg = $("#dropMsg");
+  if (!file) return;
+  if (STATUS && STATUS.turnstile_sitekey && !TS_TOKEN) { setMsg(msg, et("turnstile_required"), "err"); return; }
+  setMsg(msg, "");
+  $("#dropResult").classList.remove("show");
+  $("#bar").classList.add("show");
+  $("#bar i").style.width = "0%";
+  const q = "?once=" + ($("#once").checked ? "1" : "0") + (TS_TOKEN ? "&cf=" + encodeURIComponent(TS_TOKEN) : "");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/pickup" + q);
+  xhr.setRequestHeader("x-file-name", encodeURIComponent(file.name));
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("#bar i").style.width = Math.round((e.loaded / e.total) * 100) + "%"; };
+  xhr.onload = () => {
+    $("#bar").classList.remove("show");
+    let j = null;
+    try { j = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status === 201 && j && j.ok) {
+      $("#dName").textContent = j.name;
+      $("#dMeta").textContent = t("size") + " " + fmtSize(j.size) + " · " + t("expires") + " " + fmtDate(j.expires_at);
+      $("#dCode").textContent = j.code;
+      $("#dNote").textContent = t("dNote");
+      $("#dropResult").classList.add("show");
+      setMsg(msg, "", "");
+      $("#copy").onclick = async () => {
+        try { await navigator.clipboard.writeText(j.code); $("#copy").textContent = t("copied"); setTimeout(() => { $("#copy").textContent = t("copy"); }, 1500); } catch {}
+      };
+      if (TS_TOKEN && window.turnstile) window.turnstile.reset($("#ts"));
+      TS_TOKEN = null;
+    } else {
+      setMsg(msg, et(j && j.error ? j.error : xhr.status === 429 ? "too_many" : "storage_failed"), "err");
+    }
+  };
+  xhr.onerror = () => { $("#bar").classList.remove("show"); setMsg(msg, et("network"), "err"); };
+  setMsg(msg, t("uploading"), "");
+  xhr.send(file);
+}
+
+$("#code").addEventListener("input", () => { setMsg($("#claimMsg"), ""); syncClaimBtn(); });
+$("#code").addEventListener("keydown", (e) => { if (e.key === "Enter") doClaim(false); });
+$("#claim").onclick = () => doClaim(false);
+$("#lang-toggle").onclick = () => {
+  try { localStorage.setItem("cd_lang", LANG === "zh" ? "en" : "zh"); } catch {}
+  LANG = LANG === "zh" ? "en" : "zh";
+  applyI18n();
+};
+$("#drop").onclick = () => $("#file").click();
+$("#file").onchange = (e) => upload(e.target.files && e.target.files[0]);
+["dragover", "dragenter"].forEach((ev) => $("#drop").addEventListener(ev, (e) => { e.preventDefault(); $("#drop").classList.add("on"); }));
+["dragleave", "drop"].forEach((ev) => $("#drop").addEventListener(ev, (e) => { e.preventDefault(); $("#drop").classList.remove("on"); }));
+$("#drop").addEventListener("drop", (e) => {
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) upload(f);
+});
+
+const pre = norm(new URLSearchParams(location.search).get("c"));
+if (pre.length === 8) { $("#code").value = pre; }
+boot().then(() => { if (pre.length === 8) doClaim(true); });
+</script>
+</body>
+</html>

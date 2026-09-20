@@ -165,7 +165,7 @@ class Db {
     }
     if (/^SELECT COUNT\(\*\) AS c FROM download_logs/.test(sql)) return { c: 0 };
     if (/^SELECT reason, expires_at FROM banned_ips/.test(sql)) return null;
-    if (/^SELECT COUNT\(\*\) AS c FROM shares$/.test(sql)) return { c: this.shares.length };
+    if (/^SELECT COUNT\(\*\) AS c FROM shares( WHERE origin IS NULL OR origin <> 'drop')?$/.test(sql)) return { c: this.shares.filter((s: any) => (s.origin ?? "admin") !== "drop").length };
 
     /* ── 文件分享（ INNER JOIN，回收站里的文件不可见）── */
     if (/FROM shares s JOIN files f/.test(sql) && /WHERE s\.id = \?1/.test(sql)) {

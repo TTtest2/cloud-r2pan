@@ -396,7 +396,17 @@ const I18N = {
     // 登录
     loginSubtitle: '管理后台 · 请输入管理密钥登录', keyPlaceholder: '管理密钥 (admin)',
     // 标签
-    tabOverview: '概览', tabFiles: '文件', tabShares: '分享', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置',
+    tabOverview: '概览', tabFiles: '文件', tabShares: '分享', tabPickups: '投递箱', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置',
+    copyCode: '复制取件码',
+    pkHelp: '任何人从 /pickup 投进来的文件都在这里。它们照常占你的存储配额，但不会进下载市场，也不会出现在正常分享列表里；只有拿到取件码的人能取。保留期一到，定时任务连文件带对象一起清除。',
+    pkQuota: '投递区已用 {used} / {limit}（约 {pct}%）',
+    pkRoot: '根目录', pkFrom: '来源 IP', pkTaken: '已取', pkUntil: '有效期至',
+    pkEmpty: '还没有人投递文件', pkOnce: '一次一取', pkExpiredTag: '已过期',
+    pkShowCode: '查看取件码', pkCodeTitle: '取件码', pkCodeHelp: '把这条码发给对方；对方在 /pickup 输入即可取件。',
+    pkPromote: '入库', pkDestroy: '销毁',
+    pkConfirmPromote: '把 {n} 个投件移入所选目录？移动后这条投递连同取件码一起作废，需要对外分享请另建分享。',
+    pkConfirmDestroy: '立刻彻底销毁 {n} 个投件？对象会马上删除，不进回收站。',
+    pkPromoted: '已入库 {n} 个（取件码同时作废）', pkDestroyed: '已销毁 {n} 个',
     // 概览
     statTraffic: '本月流量', usedPercent: '已用 {n}% · 跨月自动重置', noLimit: '未设置限额',
     statDownloads: '累计下载', todayN: '今日 {n} 次',
@@ -484,6 +494,18 @@ const I18N = {
     storageQuotaD: '按已用存储判断，超限的上传会被拒绝并回滚（507）；0 表示不限。',
     trashDays: '回收站保留天数',
     trashDaysD: '删除先进回收站，到期由定时任务彻底清除；期间对象仍占存储配额。0 = 关闭回收站（删除即物理删除）。最长 90 天。',
+    pickupOn: '开放取件码投递',
+    pickupOnD: '这是一个公网可写的入口：任何人都能往本站投文件并拿到一枚取件码。关掉它不只收起入口 —— 取件码本身就是凭据，已经发出去的码会全部失效。',
+    pickupMax: '投递单件上限（MB）',
+    pickupMaxD: '只作用于匿名投递，不影响你自己上传。上限 100 MB（Workers 请求体的硬顶，投递通道不走分片）。',
+    pickupQuota: '投递区总配额（MB）',
+    pickupQuotaD: '整个投递区的体积上限，超了就婉拒后来者（0 = 不限）。免费 R2 只有 10 GB，默认 1 GB 是刻意留的余量。',
+    pickupPerIp: '单 IP 每天件数',
+    pickupPerIpD: '按来源 IP 计的每日投递件数（0 = 不限）。注意同一 NAT 出口的人共享这个额度。',
+    pickupPerIpMb: '单 IP 每天字节（MB）',
+    pickupPerIpMbD: '按来源 IP 计的每日投递体积（0 = 不限）。声明了体积就连本件一起算。',
+    pickupDays: '投递保留天数',
+    pickupDaysD: '到期后取件码失效，定时任务连文件带对象一起清除，不进回收站。1–90 天。',
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
     resetTraffic: '重置本月流量', resetTrafficD: '将已用流量清零，立即恢复下载服务', reset: '重置',
     perIp: '单 IP 最大下载次数',
@@ -730,7 +752,17 @@ const I18N = {
     // 登录
     loginSubtitle: 'Admin console · Enter your admin key to continue', keyPlaceholder: 'Admin key (admin)',
     // 标签
-    tabOverview: 'Overview', tabFiles: 'Files', tabShares: 'Shares', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings',
+    tabOverview: 'Overview', tabFiles: 'Files', tabShares: 'Shares', tabPickups: 'Inbox', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings',
+    copyCode: 'Copy pickup code',
+    pkHelp: 'Everything visitors dropped through /pickup lands here. It counts against your storage quota, never appears in the marketplace or the normal share list, and only someone holding the code can fetch it. When the retention window ends the hourly sweep removes the rows and the objects.',
+    pkQuota: 'Drop area using {used} / {limit} ({pct}%)',
+    pkRoot: 'Root folder', pkFrom: 'From IP', pkTaken: 'Taken', pkUntil: 'Valid until',
+    pkEmpty: 'Nobody has dropped anything yet', pkOnce: 'one-shot', pkExpiredTag: 'expired',
+    pkShowCode: 'Show code', pkCodeTitle: 'Pickup code', pkCodeHelp: 'Send this code to the recipient; they enter it on /pickup.',
+    pkPromote: 'Keep', pkDestroy: 'Destroy',
+    pkConfirmPromote: 'Move {n} drop(s) into the chosen folder? The drop and its pickup code are invalidated as part of keeping it — create a share separately if you want to hand it out.',
+    pkConfirmDestroy: 'Destroy {n} drop(s) right now? Objects are deleted immediately and bypass the recycle bin.',
+    pkPromoted: 'Kept {n} file(s) (pickup code invalidated)', pkDestroyed: 'Destroyed {n}',
     // 概览
     statTraffic: 'Monthly Traffic', usedPercent: '{n}% used · resets monthly', noLimit: 'No limit set',
     statDownloads: 'Total Downloads', todayN: '{n} today',
@@ -818,6 +850,18 @@ const I18N = {
     storageQuotaD: 'Uploads that would exceed the quota are refused and rolled back (507). 0 = unlimited.',
     trashDays: 'Trash Retention (days)',
     trashDaysD: 'Deletes go to the trash first and are purged by the scheduled job once expired; objects still count against storage meanwhile. 0 disables the trash (immediate permanent delete). Max 90.',
+    pickupOn: 'Allow pickup-code drops',
+    pickupOnD: 'This is a publicly writable door: anyone can drop a file here and get a pickup code. Switching it off does more than hide the form — the code is the credential, so every code already handed out stops working.',
+    pickupMax: 'Per dropped file (MB)',
+    pickupMaxD: 'Applies to anonymous drops only, not to your own uploads. Hard ceiling 100 MB (the Workers request body limit; the drop path does not use multipart).',
+    pickupQuota: 'Drop area quota (MB)',
+    pickupQuotaD: 'Total size the drop area may occupy; later drops are refused once it is full (0 = unlimited). Free R2 gives you 10 GB, so the 1 GB default is deliberate headroom.',
+    pickupPerIp: 'Items per IP per day',
+    pickupPerIpD: 'Daily drop count per source IP (0 = unlimited). Everyone behind the same NAT shares this budget.',
+    pickupPerIpMb: 'Bytes per IP per day (MB)',
+    pickupPerIpMbD: 'Daily drop volume per source IP (0 = unlimited). A declared size counts against the budget before the write.',
+    pickupDays: 'Drop retention (days)',
+    pickupDaysD: 'After this the code stops working and the scheduled sweep removes the row and the object — no recycle bin. 1–90.',
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
     resetTraffic: 'Reset Monthly Traffic', resetTrafficD: 'Zero out used traffic and resume downloads immediately', reset: 'Reset',
     perIp: 'Max Downloads per IP',
@@ -1332,6 +1376,7 @@ async function showApp(){
       <button data-tab="overview" class="active">${esc(t('tabOverview'))}</button>
       <button data-tab="files">${esc(t('tabFiles'))}</button>
       <button data-tab="shares">${esc(t('tabShares'))}</button>
+      <button data-tab="pickups">📮 ${esc(t('tabPickups'))}</button>
       <button data-tab="logs">${esc(t('tabLogs'))}</button>
       <button data-tab="bans">${esc(t('tabBans'))}</button>
       <button data-tab="global">${esc(t('tabGlobal'))}</button>
@@ -1359,7 +1404,7 @@ function switchTab(tab){
   });
   const v = $('#view');
   v.innerHTML = '<div class="spin"></div>';
-  ({ overview: loadOverview, files: loadFiles, shares: loadShares, logs: loadLogs, bans: loadBans, global: loadGlobal, codes: loadCodes, security: loadSecurity, settings: loadSettings })[tab]().catch(e => {
+  ({ overview: loadOverview, files: loadFiles, shares: loadShares, pickups: loadPickups, logs: loadLogs, bans: loadBans, global: loadGlobal, codes: loadCodes, security: loadSecurity, settings: loadSettings })[tab]().catch(e => {
     v.innerHTML = `<div class="glass section"><div class="empty"><div class="icon">⚠️</div>${esc(e.message === 'unauthorized' ? t('loadingErr') : e.message)}</div></div>`;
   });
 }
@@ -1966,6 +2011,102 @@ function openShareModal(fileId, folderId){
       $('#sh-open').onclick = () => window.open(r.url, '_blank');
     }catch(e){ toast(e.message, 'err'); }
   };
+}
+
+/* ═══════════ 投递箱（匿名投递） ═══════════ */
+let selDrops = new Set();
+
+async function loadPickups(){
+  const [d, fold] = await Promise.all([api('/api/admin/pickups'), api('/api/admin/folders')]);
+  const drops = d.drops || [];
+  const opts = [`<option value="root">${esc(t('pkRoot'))}</option>`]
+    .concat((fold.folders || []).map(f => `<option value="${esc(f.id)}">${esc(f.path || f.name)}</option>`)).join('');
+  const usedPct = d.quota_bytes > 0 ? Math.min(100, Math.round(d.bytes / d.quota_bytes * 100)) : 0;
+  $('#view').innerHTML = `
+    <div class="glass section" style="margin-bottom:18px">
+      <div class="section-title"><h2>📮 ${esc(t('tabPickups'))}（${d.total}）</h2></div>
+      <div class="field"><div class="tip">${esc(t('pkHelp'))}</div></div>
+      <div class="progress ${usedPct >= 80 ? 'hot' : ''}" style="margin-top:10px"><i style="width:${usedPct}%"></i></div>
+      <div class="foot" style="font-size:12.5px;color:rgba(29,36,51,.62);margin-top:6px">
+        ${esc(t('pkQuota', { used: fmtSize(d.bytes), limit: d.quota_bytes ? fmtSize(d.quota_bytes) : t('unlimitedShort'), pct: usedPct }))}
+      </div>
+      ${drops.length ? `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+        <select id="pk-target" style="padding:10px 12px;border-radius:12px;font-size:14px;font-family:inherit;color:#1d2433;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);outline:none">${opts}</select>
+        <button class="btn sm primary" id="pk-batch-promote" disabled>${esc(t('pkPromote'))}</button>
+        <button class="btn sm danger" id="pk-batch-destroy" disabled>${esc(t('pkDestroy'))}</button>
+      </div>` : ''}
+    </div>
+    <div class="glass section">
+      ${drops.length ? `
+      <div style="overflow-x:auto"><table class="tbl">
+        <thead><tr>
+          <th style="width:34px"><input type="checkbox" id="pk-all"></th>
+          <th>${esc(t('colName'))}</th><th>${esc(t('pkFrom'))}</th><th>${esc(t('colSize'))}</th>
+          <th>${esc(t('pkTaken'))}</th><th>${esc(t('pkUntil'))}</th><th style="width:220px">${esc(t('colActions'))}</th>
+        </tr></thead>
+        <tbody>${drops.map(x => `
+          <tr>
+            <td><input type="checkbox" data-pk="${esc(x.file_id)}" ${selDrops.has(x.file_id) ? 'checked' : ''}></td>
+            <td class="name-cell" title="${esc(x.name)}">${esc(x.name)}${x.revoked ? ` <span class="tag">${esc(t('pkExpiredTag'))}</span>` : ''}</td>
+            <td class="mono">${esc(x.origin_ip || '—')}</td>
+            <td class="num">${fmtSize(x.size)}</td>
+            <td class="num">${x.pickup_claims || 0}${x.one_shot ? ' · ' + esc(t('pkOnce')) : ''}</td>
+            <td class="num">${x.expires_at ? fmtTime(x.expires_at) : '—'}</td>
+            <td>
+              <button class="btn sm" data-code="${esc(x.share_id)}">${esc(t('pkShowCode'))}</button>
+              <button class="btn sm" data-promote="${esc(x.file_id)}">${esc(t('pkPromote'))}</button>
+              <button class="btn sm danger" data-destroy="${esc(x.file_id)}">${esc(t('pkDestroy'))}</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>` : `<div class="empty"><div class="icon">📭</div>${esc(t('pkEmpty'))}</div>`}
+    </div>`;
+
+  const syncBatch = () => {
+    $('#pk-batch-promote') && ($('#pk-batch-promote').disabled = !selDrops.size);
+    $('#pk-batch-destroy') && ($('#pk-batch-destroy').disabled = !selDrops.size);
+  };
+  const promote = async (ids) => {
+    if(!ids.length) return;
+    if(!await confirmDialog(t('pkPromote'), t('pkConfirmPromote', { n: ids.length }), false)) return;
+    try{
+      const r = await api('/api/admin/pickups/promote', { method:'POST', body: JSON.stringify({ ids, folder_id: $('#pk-target').value }) });
+      toast(t('pkPromoted', { n: r.promoted }));
+      selDrops.clear(); loadPickups();
+    }catch(e){ toast(e.message, 'err'); }
+  };
+  const destroy = async (ids) => {
+    if(!ids.length) return;
+    if(!await confirmDialog(t('pkDestroy'), t('pkConfirmDestroy', { n: ids.length }))) return;
+    try{
+      const r = await api('/api/admin/pickups/destroy', { method:'POST', body: JSON.stringify({ ids }) });
+      toast(t('pkDestroyed', { n: r.destroyed }));
+      selDrops.clear(); loadPickups();
+    }catch(e){ toast(e.message, 'err'); }
+  };
+
+  $('#pk-all') && ($('#pk-all').onclick = (e) => {
+    $$('[data-pk]').forEach(c => { c.checked = e.target.checked; e.target.checked ? selDrops.add(c.dataset.pk) : selDrops.delete(c.dataset.pk); });
+    syncBatch();
+  });
+  $$('[data-pk]').forEach(c => c.onclick = () => {
+    c.checked ? selDrops.add(c.dataset.pk) : selDrops.delete(c.dataset.pk);
+    syncBatch();
+  });
+  $$('[data-code]').forEach(b => b.onclick = async () => {
+    try{
+      const r = await api(`/api/admin/pickups/${encodeURIComponent(b.dataset.code)}/code`);
+      openModal(`<h3>${esc(t('pkCodeTitle'))}</h3>
+        <div style="font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:28px;letter-spacing:.1em;text-align:center;padding:14px;margin:10px 0;border-radius:14px;background:#eef4ff;border:1px solid rgba(47,111,237,.25)">${esc(r.code)}</div>
+        <div class="sub">${esc(t('pkCodeHelp'))}</div>
+        <div class="actions"><button class="btn" data-x>${esc(t('close'))}</button><button class="btn primary" id="pk-copy">${esc(t('copyCode'))}</button></div>`);
+      $('#pk-copy').onclick = () => { copyText(r.code.replace('-', '')); };
+    }catch(e){ toast(e.message, 'err'); }
+  });
+  $$('[data-promote]').forEach(b => b.onclick = () => promote([b.dataset.promote]));
+  $$('[data-destroy]').forEach(b => b.onclick = () => destroy([b.dataset.destroy]));
+  $('#pk-batch-promote') && ($('#pk-batch-promote').onclick = () => promote([...selDrops]));
+  $('#pk-batch-destroy') && ($('#pk-batch-destroy').onclick = () => destroy([...selDrops]));
 }
 
 /* ═══════════ 分享 ═══════════ */
@@ -2804,6 +2945,30 @@ async function loadSettings(){
         <div class="info"><div class="t">🗑 ${esc(t('trashDays'))}</div><div class="d">${esc(t('trashDaysD'))}</div></div>
         <input type="number" id="st-trash-days" min="0" max="90" step="1" value="${s.trash_retention_days ?? 7}">
       </div>
+      <div class="row">
+        <div class="info"><div class="t">📮 ${esc(t('pickupOn'))}</div><div class="d">${esc(t('pickupOnD'))}</div></div>
+        <label class="switch"><input type="checkbox" id="st-pickup-on" ${s.pickup_enabled !== false ? 'checked' : ''}><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">📦 ${esc(t('pickupMax'))}</div><div class="d">${esc(t('pickupMaxD'))}</div></div>
+        <input type="number" id="st-pickup-max" min="1" max="100" step="1" value="${s.pickup_max_upload_mb ?? 100}">
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">🗄️ ${esc(t('pickupQuota'))}</div><div class="d">${esc(t('pickupQuotaD'))}</div></div>
+        <input type="number" id="st-pickup-quota" min="0" step="128" value="${s.pickup_total_quota_mb ?? 1024}">
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">🧮 ${esc(t('pickupPerIp'))}</div><div class="d">${esc(t('pickupPerIpD'))}</div></div>
+        <input type="number" id="st-pickup-count" min="0" step="1" value="${s.pickup_per_ip_daily_count ?? 5}">
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">📡 ${esc(t('pickupPerIpMb'))}</div><div class="d">${esc(t('pickupPerIpMbD'))}</div></div>
+        <input type="number" id="st-pickup-mb" min="0" step="128" value="${s.pickup_per_ip_daily_mb ?? 1024}">
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">⏳ ${esc(t('pickupDays'))}</div><div class="d">${esc(t('pickupDaysD'))}</div></div>
+        <input type="number" id="st-pickup-days" min="1" max="90" step="1" value="${s.pickup_retention_days ?? 7}">
+      </div>
     </div>
     <div class="glass group">
       <div class="row">
@@ -3003,6 +3168,12 @@ async function loadSettings(){
       max_upload_mb: Number($('#st-max-upload').value) || 0,
       storage_quota_mb: Number($('#st-quota').value) || 0,
       trash_retention_days: Math.max(0, Math.min(90, Number($('#st-trash-days')?.value) || 0)),
+      pickup_enabled: !!$('#st-pickup-on')?.checked,
+      pickup_max_upload_mb: Math.max(0, Math.min(100, Number($('#st-pickup-max')?.value) || 0)),
+      pickup_total_quota_mb: Math.max(0, Number($('#st-pickup-quota')?.value) || 0),
+      pickup_per_ip_daily_count: Math.max(0, Number($('#st-pickup-count')?.value) || 0),
+      pickup_per_ip_daily_mb: Math.max(0, Number($('#st-pickup-mb')?.value) || 0),
+      pickup_retention_days: Math.max(1, Math.min(90, Number($('#st-pickup-days')?.value) || 7)),
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,
       auto_ban: $('#st-autoban').checked,

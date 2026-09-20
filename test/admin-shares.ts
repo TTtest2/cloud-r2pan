@@ -87,13 +87,16 @@ class FakeDb {
     if (/^SELECT key, value FROM settings/.test(sql)) {
       return mode === "all" ? [{ key: "admin_ips", value: "" }] : null;
     }
-    if (/^SELECT COUNT\(\*\) AS c FROM shares$/.test(sql)) return { c: this.shares.length };
+    if (/^SELECT COUNT\(\*\) AS c FROM shares( WHERE origin IS NULL OR origin <> 'drop')?$/.test(sql)) {
+      // 后台分享列表不含投递行（它们走"投递箱"那套）
+      return { c: this.shares.filter((s: any) => (s.origin ?? "admin") !== "drop").length };
+    }
     if (/FROM shares s (LEFT )?JOIN files f/.test(sql)) {
       if (mode !== "all") return null;
       const [limit, offset] = binds as number[];
       // 只返回 SQL 真正投影的 s.xxx 列 —— 这样别人把 password_cipher 加回 SELECT 时测试才会红
       const projected = [...sql.matchAll(/\bs\.([a-z_]+)/g)].map((m) => m[1]);
-      return this.shares.slice(offset, offset + limit).map((s) => {
+      return this.shares.filter((s: any) => (s.origin ?? "admin") !== "drop").slice(offset, offset + limit).map((s) => {
         const row: Record<string, unknown> = { file_name: "f-" + s.id, file_size: 10, file_mime: "text/plain" };
         for (const col of projected) {
           if (col in s) row[col] = (s as any)[col];
