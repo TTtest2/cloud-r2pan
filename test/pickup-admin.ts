@@ -26,7 +26,7 @@ function check(name: string, cond: boolean, detail = "") {
 }
 
 const ADMIN = "pickup-admin-secret";
-const CODE = "ab3dk9fq";
+const CODE = "123456";
 
 type Row = Record<string, any>;
 
@@ -190,7 +190,7 @@ async function main() {
     const db = fixture();
     db.shares[0].pickup_cipher = await encryptSecret(CODE, ADMIN);
     const r = await admin(db, "/api/admin/pickups/SH_DROP/code");
-    check("点查看才解密，并按分组显示", r.status === 200 && r.body?.code === "ab3d-k9fq", JSON.stringify(r.body));
+    check("点查看才解密，并按分组显示", r.status === 200 && r.body?.code === "123-456", JSON.stringify(r.body));
     const notDrop = await admin(db, "/api/admin/pickups/SH_OWN/code");
     check("普通分享不在这个接口里", notDrop.status === 404, String(notDrop.status));
     const gone = await admin(db, "/api/admin/pickups/SH_NONE/code");

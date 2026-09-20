@@ -122,6 +122,12 @@ export interface Settings {
   pickupPerIpDailyCount: number;
   /** 单个 IP 一天能投多少字节，0 = 不限 */
   pickupPerIpDailyBytes: number;
+  pickupCodeStyle: "digits6" | "alnum8";
+  /**
+   * 单个 IP 一天最多输码尝试多少次，0 = 不限。
+   * 6 位纯数字只有 100 万种组合，码又是唯一凭据 —— 挡爆破全指望这类预算。
+   */
+  pickupPerIpDailyClaims: number;
   /** 投递默认保留天数（到期由 cron 连对象一起清掉） */
   pickupRetentionDays: number;
 
@@ -198,6 +204,8 @@ export const DEFAULT_SETTINGS: Settings = {
   pickupTotalQuotaBytes: 1024 * 1024 ** 2,
   pickupPerIpDailyCount: 5,
   pickupPerIpDailyBytes: 1024 * 1024 ** 2,
+  pickupCodeStyle: "digits6",
+  pickupPerIpDailyClaims: 50,
   pickupRetentionDays: 7,
   // 存储后端 —— 默认 R2（向后兼容）
   storageProvider: "r2",
@@ -285,6 +293,8 @@ export async function getSettings(env: Env): Promise<Settings> {
     pickupTotalQuotaBytes: toInt(map.get("pickup_total_quota_mb"), DEFAULT_SETTINGS.pickupTotalQuotaBytes / 1024 ** 2) * 1024 ** 2,
     pickupPerIpDailyCount: toInt(map.get("pickup_per_ip_daily_count"), DEFAULT_SETTINGS.pickupPerIpDailyCount),
     pickupPerIpDailyBytes: toInt(map.get("pickup_per_ip_daily_mb"), DEFAULT_SETTINGS.pickupPerIpDailyBytes / 1024 ** 2) * 1024 ** 2,
+    pickupCodeStyle: map.get("pickup_code_style") === "alnum8" ? "alnum8" : "digits6",
+    pickupPerIpDailyClaims: toInt(map.get("pickup_per_ip_daily_claims"), DEFAULT_SETTINGS.pickupPerIpDailyClaims),
     pickupRetentionDays: Math.min(90, toInt(map.get("pickup_retention_days"), DEFAULT_SETTINGS.pickupRetentionDays)),
     // 存储后端
     storageProvider: (map.get("storage_provider") ?? "r2") as Settings["storageProvider"],

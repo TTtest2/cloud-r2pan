@@ -122,10 +122,14 @@ address and the credential**, and is treated like a password:
 
 - only `HMAC(admin, normalised code)` plus a decryptable copy for the console are stored; rotating
   `admin` invalidates every code in flight;
-- 8 characters from an alphabet without `0o1li`, input normalised for case, spaces and dashes
-  (`AB3D-K9FQ` ≡ `ab3dk9fq`); a mistyped code fails the shape check and never reaches D1;
-- three layers of throttling: shape rejection (zero DB cost), 10 attempts/minute/IP, and 5 failures
-  per code before that code stops being looked up at all;
+- input is normalised for case, spaces and dashes (`123-456` ≡ `123456`); a code that fails the
+  shape check never reaches D1 at all;
+- the default is actually **6 pure digits** (`pickup_code_style = digits6`) because it is easy to
+  read out — that is only 1,000,000 combinations, so this format is defended by the budgets below
+  and by the request quota, not by entropy. `alnum8` is one setting away if you want unguessable;
+- lookups accept either shape, so **switching styles never invalidates codes already handed out**;
+- three layers of throttling: shape rejection (zero DB cost), 10 attempts/minute/IP **plus 50/day/IP**,
+  and 5 failures per code before that code stops being looked up at all;
 - every failure renders the same 404, so the endpoint cannot be used to probe whether a code exists.
 
 Quotas live in `settings` and default to what the free plan can absorb:
@@ -136,6 +140,8 @@ Quotas live in `settings` and default to what the free plan can absorb:
 | `pickup_max_upload_mb` | 100 | per file (the Workers body ceiling; drops never use multipart) |
 | `pickup_per_ip_daily_count` | 5 | items per source IP per day (shared behind one NAT) |
 | `pickup_per_ip_daily_mb` | 1024 | bytes per source IP per day |
+| `pickup_code_style` | `digits6` | code format: 6 pure digits (easy to read) or `alnum8` (unguessable) |
+| `pickup_per_ip_daily_claims` | 50 | code attempts per IP per day — the main defence in digit mode |
 | `pickup_total_quota_mb` | 1024 | whole drop area ≈ one tenth of free R2; over it returns 507 and rolls the object back |
 | `pickup_retention_days` | 7 | then the code dies and the cron deletes row and object — no recycle bin |
 

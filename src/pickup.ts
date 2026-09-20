@@ -23,11 +23,22 @@ import { declaredSize, formatMb, postUploadRejection, preUploadRejection } from 
 import { errorPage, json } from "./pages";
 import { getTurnstileInfo, isTurnstileEnabled, serveShareDownload, verifyTurnstileToken } from "./public";
 
-/** 去掉 0/o/1/i/l 的人工可抄字符集 */
-const CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
-const CODE_LEN = 8;
-/** 一次投件的取件码最多重试几次避撞（29^8 空间里撞码极罕见） */
+/**
+ * 码的两种形状。`digits6` 是站主选的"6 位纯数字"—— 好念好抄，但只有 100 万种组合，
+ * 安全性完全压在限流与每日尝试预算上；`alnum8` 是随时可切回去的强档（去掉 0o1li 的
+ * 32 字符集，约 40 bit）。
+ */
+const CODE_STYLES = {
+  digits6: { len: 6, alphabet: "0123456789", group: 3 },
+  alnum8: { len: 8, alphabet: "abcdefghjkmnpqrstuvwxyz23456789", group: 4 },
+} as const;
+export type PickupCodeStyle = keyof typeof CODE_STYLES;
+/** 一次投件的取件码最多重试几次避撞 */
 const CODE_RETRY = 5;
+
+function styleOf(s: string | null | undefined): PickupCodeStyle {
+  return s === "alnum8" ? "alnum8" : "digits6";
+}
 
 /** 投递文件统一落这个系统目录；后台据此过滤，改名不影响逻辑（按 id 找） */
 export const DROP_FOLDER_NAME = "投递箱";
@@ -35,15 +46,24 @@ export const DROP_FOLDER_NAME = "投递箱";
 export type PickupCode = { code: string; hash: string; cipher: string };
 
 /**
- * 归一化用户输入的码：忽略大小写、空格与连字符（"AB3D-K9FQ" 与 "ab3dk9fq" 等价）。
- * 返回 null 表示这根本不是个合法形状的码 —— 此时连查库都不要发生。
+ * 归一化用户输入的码：忽略大小写、空格与连字符（`123-456` 等价于 `123456`，
+ * `AB3D-K9FQ` 等价于 `ab3dk9fq`）。返回 null 表示形状不合法 —— 此时连查库都不要发生。
  */
-export function normalizePickupCode(raw: unknown): string | null {
+export function normalizePickupCode(raw: unknown, style: PickupCodeStyle = "digits6"): string | null {
   if (typeof raw !== "string") return null;
+  const spec = CODE_STYLES[styleOf(style)];
   const compact = raw.toLowerCase().replace(/[\s\-_]/g, "");
-  if (compact.length !== CODE_LEN) return null;
-  for (const ch of compact) if (!CODE_ALPHABET.includes(ch)) return null;
+  if (compact.length !== spec.len) return null;
+  for (const ch of compact) if (!spec.alphabet.includes(ch)) return null;
   return compact;
+}
+
+/**
+ * 宽松版：两种形状都收。站点切换码格式时，**已经发出去的码不该当场作废** ——
+ * 能不能取到仍由哈希查库决定，所以这里放宽没有放宽任何安全性质。
+ */
+export function normalizePickupCodeLoose(raw: unknown): string | null {
+  return normalizePickupCode(raw, "digits6") ?? normalizePickupCode(raw, "alnum8");
 }
 
 /** 码 → 可寻址的 keyed hash。用 admin 密钥做 HMAC：拿到数据库也反推不出码 */
@@ -52,18 +72,24 @@ export function pickupCodeHash(env: Env, code: string): Promise<string> {
 }
 
 /** 生成一枚尚未占用的码（撞了 unique 索引就换一枚） */
-export async function mintPickupCode(env: Env): Promise<PickupCode> {
-  let last: PickupCode | null = null;
-  for (let i = 0; i < CODE_RETRY; i++) {
-    const bytes = crypto.getRandomValues(new Uint8Array(CODE_LEN));
-    const code = Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+export async function mintPickupCode(env: Env, style?: PickupCodeStyle): Promise<PickupCode> {
+  const spec = CODE_STYLES[styleOf(style ?? (await getSettings(env)).pickupCodeStyle)];
+  // 拒绝采样：256 不是字符集大小的整数倍，直接取模会让前面几个字符略微更常见 ——
+  // 6 位数字一共才 100 万种组合，这点偏斜不值得留给攻击者
+  const limit = Math.floor(256 / spec.alphabet.length) * spec.alphabet.length;
+  for (let attempt = 0; attempt < CODE_RETRY; attempt++) {
+    const bytes = crypto.getRandomValues(new Uint8Array(spec.len));
+    let code = "";
+    for (const b of bytes) {
+      let v = b;
+      while (v >= limit) v = crypto.getRandomValues(new Uint8Array(1))[0];
+      code += spec.alphabet[v % spec.alphabet.length];
+    }
     const hash = await pickupCodeHash(env, code);
     const taken = await env.db.prepare("SELECT id FROM shares WHERE pickup_hash = ?1").bind(hash).first();
-    const cipher = await encryptSecret(code, env.admin);
-    last = { code, hash, cipher };
-    if (!taken) return last;
+    if (!taken) return { code, hash, cipher: await encryptSecret(code, env.admin) };
   }
-  throw new Error("取件码空间撞满（不可能到这里，除非 admin 密钥被换过又反复撞）");
+  throw new Error("取件码连续撞码，放弃（请检查是否被人刷满了码空间）");
 }
 
 /** 后台回看码：解密失败（换过密钥）就回 null，而不是 500 */
@@ -75,9 +101,10 @@ export async function revealPickupCode(env: Env, cipher: string | null): Promise
     return null;
   }
 }
-/** 展示用分组：ab3d-k9fq */
+/** 展示用分组：123-456 / ab3d-k9fq（按码自己的长度，切了格式也不影响旧码的可读性） */
 export function formatPickupCode(code: string): string {
-  return `${code.slice(0, 4)}-${code.slice(4)}`;
+  const g = code.length === 6 ? 3 : Math.ceil(code.length / 2);
+  return code.length <= g ? code : `${code.slice(0, g)}-${code.slice(g)}`;
 }
 
 /** 投递区当前占用（只算还活着的 drop 行，去重后的真实字节） */
@@ -270,6 +297,7 @@ export async function handlePickupDrop(req: Request, env: Env, ctx: ExecutionCon
   return json({
     ok: true,
     code: formatPickupCode(code),
+    code_style: settings.pickupCodeStyle,
     name,
     size,
     expires_at: expiresAt,
@@ -289,6 +317,9 @@ export async function handlePickupStatus(req: Request, env: Env): Promise<Respon
     per_ip_daily_count: s.pickupPerIpDailyCount,
     per_ip_daily_mb: formatMb(s.pickupPerIpDailyBytes),
     total_quota_mb: formatMb(s.pickupTotalQuotaBytes),
+    code_style: s.pickupCodeStyle,
+    code_length: s.pickupCodeStyle === "alnum8" ? 8 : 6,
+    per_ip_daily_claims: s.pickupPerIpDailyClaims,
     turnstile_sitekey: (await isTurnstileEnabled(env, s)) ? getTurnstileInfo(env, s).sitekey : null,
   });
 }
@@ -324,14 +355,15 @@ export interface DropRow {
 /* ═══════════ 取件：POST /api/pickup/claim {code} ═══════════ */
 
 /**
- * 输码 → 换一张短时效票据。凭据就是码本身，所以这一层是唯一的对外认证口，
- * 三道省钱的闸：
+ * 输码 → 换一张短时效票据。凭据就是码本身，而默认形状是 6 位纯数字（100 万种组合），
+ * 所以这一层是唯一的对外认证口，闸也更硬：
  *   ① 形状不对（长度/字符集）连哈希与查库都不做；
- *   ② rateLimit 按 IP 数总请求，暴力猜的频次被压到每分钟十几次；
- *   ③ 按"被提交的那枚码"数失败：同一枚码被反复试就不再查库（顺带保住 D1 读次数）。
+ *   ② 按 IP 每分钟 10 次，**外加每天 50 次** —— 每天这条才是给慢速扫号准备的，
+ *      6 位数字的防爆破全靠它和请求配额，不是靠组合数；
+ *   ③ 按"被提交的那枚码"数失败：同一枚码被反复试 5 次后不再查库（保住 D1 读次数）。
  *
- * ③ 只在对方已经知道这枚码时才可能触发（比如试一个刚过期的码），所以它不构成
- * "拿别人的码把真主人锁在门外"的把柄 —— 锁不住自己没见过的码。
+ * ③ 只在对方已经知道这枚码时才可能触发，所以它不构成"拿别人的码把真主人锁在门外"
+ * 的把柄。想真正摆脱"能被猜到"这件事，把 pickup_code_style 切回 alnum8。
  * 所有失败回同一张 404，不区分码不存在 / 已过期 / 已取走。
  */
 export async function handlePickupClaim(req: Request, env: Env): Promise<Response> {
@@ -340,9 +372,11 @@ export async function handlePickupClaim(req: Request, env: Env): Promise<Respons
 
   const ip = clientIp(req);
   if (!rateLimit(ip, "pickup-claim", 10)) return json({ error: "too_many" }, { status: 429 });
+  if (settings.pickupPerIpDailyClaims > 0 && !rateLimit(ip, "pickup-claim-day", settings.pickupPerIpDailyClaims, 86_400_000))
+    return json({ error: "too_many" }, { status: 429 });
 
   const body = (await req.json().catch(() => null)) as { code?: unknown } | null;
-  const code = normalizePickupCode(body?.code);
+  const code = normalizePickupCodeLoose(body?.code);
   if (!code) return unknownCode(req);
   if (authThrottled(code, "pickup-code", 5)) return unknownCode(req);
 
@@ -382,7 +416,7 @@ export async function handlePickupDownload(req: Request, env: Env, ctx: Executio
   const sp = new URL(req.url).searchParams;
   const ip = clientIp(req);
   if (!rateLimit(ip, "pickup-download", 30)) return json({ error: "too_many" }, { status: 429 });
-  const code = normalizePickupCode(sp.get("c"));
+  const code = normalizePickupCodeLoose(sp.get("c"));
   if (!code) return unknownCode(req);
 
   const row = await findByCode(env, code);

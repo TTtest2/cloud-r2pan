@@ -11,7 +11,7 @@
  *   npx esbuild test/pickup-code.ts --bundle --platform=node --format=esm --loader:.html=text --outfile=.dev/pickup-code.mjs
  *   node .dev/pickup-code.mjs
  */
-import { handlePickupClaim, handlePickupDownload, handlePickupDrop, normalizePickupCode, formatPickupCode, mintPickupCode, invalidateDropFolderCache } from "../src/pickup";
+import { handlePickupClaim, handlePickupDownload, handlePickupDrop, normalizePickupCode, normalizePickupCodeLoose, formatPickupCode, mintPickupCode, invalidateDropFolderCache } from "../src/pickup";
 import { invalidateSettingsCache } from "../src/settings";
 import type { Env } from "../src/types";
 
@@ -273,24 +273,32 @@ function bareCode(r: any): string {
 /* ═══════════ [1] 码的形状 ═══════════ */
 
 function codeShapeTests() {
-  console.log("\n[1] 码的归一化与展示");
-  check("大小写/空格/连字符等价", normalizePickupCode("AB3D-K9 FQ") === "ab3dk9fq", String(normalizePickupCode("AB3D-K9 FQ")));
-  check("长度不符一律不接受", normalizePickupCode("ab3dk9") === null && normalizePickupCode("ab3dk9fqx") === null);
-  check("字符集外（0o1li）不接受", normalizePickupCode("0o1li0o1") === null);
-  check("非字符串不炸", normalizePickupCode(null) === null && normalizePickupCode(12345678 as any) === null);
-  check("展示分组 abcd-efgh", formatPickupCode("ab3dk9fq") === "ab3d-k9fq", formatPickupCode("ab3dk9fq"));
+  console.log("\n[1] 码的归一化与展示（默认 6 位纯数字）");
+  check("空格与连字符被吃掉", normalizePickupCode("123 456") === "123456" && normalizePickupCode("123-456") === "123456");
+  check("数字模式下字母不接受", normalizePickupCode("12a456") === null && normalizePickupCode("ab3dk9fq") === null);
+  check("长度不符不接受", normalizePickupCode("12345") === null && normalizePickupCode("1234567") === null);
+  check("非字符串不炸", normalizePickupCode(null) === null && normalizePickupCode(123456 as any) === null);
+  check("alnum8 模式仍可用（严格）", normalizePickupCode("AB3D-K9 FQ", "alnum8") === "ab3dk9fq", String(normalizePickupCode("AB3D-K9 FQ", "alnum8")));
+  check("宽松模式两种形状都收", normalizePickupCodeLoose("123456") === "123456" && normalizePickupCodeLoose("ab3d-k9fq") === "ab3dk9fq" && normalizePickupCodeLoose("12345") === null);
+  check("前导零是码的一部分", normalizePickupCode("007456") === "007456");
+  check("展示分组按长度：123-456 / ab3d-k9fq", formatPickupCode("123456") === "123-456" && formatPickupCode("ab3dk9fq") === "ab3d-k9fq", formatPickupCode("123456"));
 }
 
 async function mintTests() {
   console.log("\n[2] 生成码");
   const db = new FakeD1();
   const a = await mintPickupCode(env(db));
-  check("码是 8 位合法字符", normalizePickupCode(a.code) === a.code, a.code);
+  check("默认形状是 6 位数字", /^\d{6}$/.test(a.code), a.code);
   check("存 keyed hash（64 hex）与密文", a.hash.length === 64 && !!a.cipher && !a.cipher.includes(a.code), a.hash.slice(0, 12));
+  invalidateSettingsCache();
+  const strong = new FakeD1({ pickup_code_style: "alnum8" });
+  const b = await mintPickupCode(env(strong));
+  check("切到 alnum8 后是 8 位且不含易混字符", /^[a-z0-9]{8}$/.test(b.code) && !/[ilo0]/.test(b.code), b.code);
+  invalidateSettingsCache();
   const taken = await mintPickupCode(env(db));
   db.shares.push({ id: "SH_TAKEN", pickup_hash: taken.hash, origin: "drop", download_count: 0, revoked: 0 });
   const again = await mintPickupCode(env(db));
-  check("撞上已占用的 hash 会换一枚", again.hash !== taken.hash && normalizePickupCode(again.code) === again.code);
+  check("撞上已占用的 hash 会换一枚", again.hash !== taken.hash && /^\d{6}$/.test(again.code), `${again.code} vs ${taken.code}`);
 }
 
 async function dropTests() {
@@ -299,7 +307,7 @@ async function dropTests() {
   r2.puts.length = 0;
   const r = await drop(db, { name: "合同 (终版).zip" });
   check("投件成功回 201", r.res.status === 201, String(r.res.status));
-  check("给出可抄的取件码", /^[a-z0-9]{4}-[a-z0-9]{4}$/.test(r.json?.code ?? ""), r.json?.code);
+  check("给出 6 位数字取件码", /^\d{3}-\d{3}$/.test(r.json?.code ?? ""), r.json?.code);
   check("对象键在 drops/ 前缀下", r2.puts.length === 1 && r2.puts[0].key.startsWith("drops/"), JSON.stringify(r2.puts));
   const f = db.files[0];
   const s = db.shares[0];
@@ -325,7 +333,7 @@ async function dropTests() {
   const page = cOff.text;
   // 三种失败（功能关闭 / 形状不对 / 码不存在）必须回同一张页面 —— 不给试探者任何信息
   const junk = await claim(new FakeD1(), "!!!");
-  const miss = await claim(new FakeD1(), "ab3dk9fq");
+  const miss = await claim(new FakeD1(), "000000");
   check("失败响应同形（不泄露原因）",
     cOff.res.status === 404 && junk.res.status === 404 && miss.res.status === 404 &&
       page.length === junk.text.length && junk.text.length === miss.text.length,
@@ -375,8 +383,8 @@ async function roundTripTests() {
   console.log("\n[6] 取件回合：票据与下载");
   const db = new FakeD1();
   const code = bareCode(await drop(db, { name: "机密.pdf" }));
-  const cl = await claim(db, code.toUpperCase());
-  check("大小写不同的码照样能取", cl.res.status === 200, String(cl.res.status));
+  const cl = await claim(db, ` ${code.slice(0, 3)}-${code.slice(3)} `);
+  check("带空格与连字符的码照样能取", cl.res.status === 200, String(cl.res.status));
   check("回文件信息与票据", cl.json?.name === "机密.pdf" && !!cl.json?.t, JSON.stringify(cl.json).slice(0, 90));
   check("已取次数被记下来", db.shares[0].pickup_claims === 1, String(db.shares[0].pickup_claims));
 
@@ -412,7 +420,7 @@ async function throttleTests() {
   check("形状不对直接拒", junk.res.status === 404, String(junk.res.status));
   check("形状不对一次库都不查", reads() === before, `多出 ${reads() - before} 条`);
 
-  const guessed = "qqqqqqqq";
+  const guessed = "999999";
   for (let i = 0; i < 5; i++) await claim(new FakeD1(), guessed, freshIp());
   const throttled = new FakeD1({});
   const mark = throttled.sqlLog.length;
@@ -426,6 +434,14 @@ async function throttleTests() {
   check("同一 IP 猜 11 次触发频率限流", last === 429, String(last));
   const otherIp = await claim(db, code, freshIp());
   check("限流按 IP 计，殃及不到别人", otherIp.res.status === 200, String(otherIp.res.status));
+
+  // 6 位数字只有 100 万种组合，靠的是"每天也不让你试几次"
+  const daily = new FakeD1({ pickup_per_ip_daily_claims: "1" });
+  const dailyCode = bareCode(await drop(daily));
+  const slow = freshIp();
+  const first = await claim(daily, dailyCode, slow);
+  const second = await claim(daily, dailyCode, slow);
+  check("每分钟还没超，但每日尝试预算超了就拒", first.res.status === 200 && second.res.status === 429, `${first.res.status}/${second.res.status}`);
 
   console.log("\n[9] 投件侧频率");
   const db3 = new FakeD1({ pickup_per_ip_daily_count: "0", pickup_per_ip_daily_mb: "0", pickup_total_quota_mb: "0" });

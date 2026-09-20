@@ -1564,6 +1564,8 @@ export async function handleAdminApi(
       pickup_total_quota_mb: s.pickupTotalQuotaBytes / 1024 ** 2,
       pickup_per_ip_daily_count: s.pickupPerIpDailyCount,
       pickup_per_ip_daily_mb: s.pickupPerIpDailyBytes / 1024 ** 2,
+      pickup_code_style: s.pickupCodeStyle,
+      pickup_per_ip_daily_claims: s.pickupPerIpDailyClaims,
       pickup_retention_days: s.pickupRetentionDays,
       traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
       max_downloads_per_ip: s.maxDownloadsPerIp,
@@ -1643,6 +1645,10 @@ export async function handleAdminApi(
     if (dropPerIp !== null) patch.pickup_per_ip_daily_count = String(Math.floor(dropPerIp));
     const dropPerIpMb = num(body.pickup_per_ip_daily_mb);
     if (dropPerIpMb !== null) patch.pickup_per_ip_daily_mb = String(Math.floor(dropPerIpMb));
+    if (body.pickup_code_style === "alnum8" || body.pickup_code_style === "digits6")
+      patch.pickup_code_style = body.pickup_code_style;
+    const dropClaims = num(body.pickup_per_ip_daily_claims);
+    if (dropClaims !== null) patch.pickup_per_ip_daily_claims = String(Math.floor(dropClaims));
     const dropDays = num(body.pickup_retention_days);
     if (dropDays !== null) patch.pickup_retention_days = String(Math.min(90, Math.max(1, Math.floor(dropDays))));
     const perIp = num(body.max_downloads_per_ip);

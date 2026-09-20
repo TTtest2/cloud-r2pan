@@ -504,6 +504,12 @@ const I18N = {
     pickupPerIpD: '按来源 IP 计的每日投递件数（0 = 不限）。注意同一 NAT 出口的人共享这个额度。',
     pickupPerIpMb: '单 IP 每天字节（MB）',
     pickupPerIpMbD: '按来源 IP 计的每日投递体积（0 = 不限）。声明了体积就连本件一起算。',
+    pickupStyle: '取件码格式',
+    pickupStyleDigits: '6 位纯数字',
+    pickupStyleAlnum: '8 位字母数字',
+    pickupStyleD: '6 位数字好念好抄，但只有 100 万种组合，而取件码就是唯一凭据 —— 防爆破全靠下面的尝试预算和你的请求配额（免费档每天 10 万次，一次全空间扫描就能把它吃满并顺带拒掉正常访问）。想要"猜不出来"就切 8 位字母数字。切换不影响已发出的码。',
+    pickupClaims: '单 IP 每天输码上限',
+    pickupClaimsD: '每个来源 IP 一天最多尝试输码多少次（0 = 不限）。6 位数字格式下这是主要防线，正常用户一天也用不到几十次。',
     pickupDays: '投递保留天数',
     pickupDaysD: '到期后取件码失效，定时任务连文件带对象一起清除，不进回收站。1–90 天。',
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
@@ -860,6 +866,12 @@ const I18N = {
     pickupPerIpD: 'Daily drop count per source IP (0 = unlimited). Everyone behind the same NAT shares this budget.',
     pickupPerIpMb: 'Bytes per IP per day (MB)',
     pickupPerIpMbD: 'Daily drop volume per source IP (0 = unlimited). A declared size counts against the budget before the write.',
+    pickupStyle: 'Pickup code format',
+    pickupStyleDigits: '6 digits',
+    pickupStyleAlnum: '8 letters+digits',
+    pickupStyleD: 'Six digits are easy to read out and type, but there are only 1,000,000 combinations and the code is the sole credential — brute forcing is held back only by the attempt budgets below and by your request quota (the free plan allows 100k/day; one full sweep of the space would burn it and lock out real visitors). Pick 8 letters+digits if you want it to be genuinely unguessable. Switching does not invalidate codes already handed out.',
+    pickupClaims: 'Code attempts per IP per day',
+    pickupClaimsD: 'How many times one source IP may try a code per day (0 = unlimited). With the 6-digit format this is the main defence; honest users never come close.',
     pickupDays: 'Drop retention (days)',
     pickupDaysD: 'After this the code stops working and the scheduled sweep removes the row and the object — no recycle bin. 1–90.',
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
@@ -2966,6 +2978,17 @@ async function loadSettings(){
         <input type="number" id="st-pickup-mb" min="0" step="128" value="${s.pickup_per_ip_daily_mb ?? 1024}">
       </div>
       <div class="row">
+        <div class="info"><div class="t">🔢 ${esc(t('pickupStyle'))}</div><div class="d">${esc(t('pickupStyleD'))}</div></div>
+        <select id="st-pickup-style" style="padding:9px 14px;border-radius:12px;background:#f3f5f9;border:1px solid rgba(24,34,58,.12);color:#1d2433;font-size:14px;font-family:inherit;outline:none;min-width:150px">
+          <option value="digits6" ${s.pickup_code_style !== 'alnum8' ? 'selected' : ''} style="color:#111">${esc(t('pickupStyleDigits'))}</option>
+          <option value="alnum8" ${s.pickup_code_style === 'alnum8' ? 'selected' : ''} style="color:#111">${esc(t('pickupStyleAlnum'))}</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">🎟️ ${esc(t('pickupClaims'))}</div><div class="d">${esc(t('pickupClaimsD'))}</div></div>
+        <input type="number" id="st-pickup-claims" min="0" step="10" value="${s.pickup_per_ip_daily_claims ?? 50}">
+      </div>
+      <div class="row">
         <div class="info"><div class="t">⏳ ${esc(t('pickupDays'))}</div><div class="d">${esc(t('pickupDaysD'))}</div></div>
         <input type="number" id="st-pickup-days" min="1" max="90" step="1" value="${s.pickup_retention_days ?? 7}">
       </div>
@@ -3173,6 +3196,8 @@ async function loadSettings(){
       pickup_total_quota_mb: Math.max(0, Number($('#st-pickup-quota')?.value) || 0),
       pickup_per_ip_daily_count: Math.max(0, Number($('#st-pickup-count')?.value) || 0),
       pickup_per_ip_daily_mb: Math.max(0, Number($('#st-pickup-mb')?.value) || 0),
+      pickup_code_style: $('#st-pickup-style')?.value === 'alnum8' ? 'alnum8' : 'digits6',
+      pickup_per_ip_daily_claims: Math.max(0, Number($('#st-pickup-claims')?.value) || 0),
       pickup_retention_days: Math.max(1, Math.min(90, Number($('#st-pickup-days')?.value) || 7)),
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,

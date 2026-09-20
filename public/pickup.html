@@ -84,7 +84,7 @@ a{color:#2f6fed}
     <h2 id="claimTitle">我有取件码</h2>
     <p id="claimHelp">不区分大小写，也不用记链接 —— 只要这一枚码。</p>
     <div class="code-row">
-      <input class="code-input" id="code" inputmode="latin" autocomplete="off" spellcheck="false" maxlength="12" placeholder="ab3d-k9fq">
+      <input class="code-input" id="code" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="7" placeholder="123-456">
       <button class="btn primary" id="claim" disabled>取件</button>
     </div>
     <div class="msg" id="claimMsg"></div>
@@ -139,7 +139,7 @@ const I18N = {
     closed: "取件功能当前未开放，请联系站点管理员。",
     dropClosed: "投递功能已关闭。",
     err: {
-      bad_code: "取件码格式不对：应该是 8 位字母数字。",
+      bad_code: "取件码格式不对：应当是 6 位数字。",
       unknown: "取件码无效，或已过期、已被取走。",
       too_many: "尝试太频繁，请稍后再试。",
       banned: "你的访问已被本站封禁。",
@@ -169,7 +169,7 @@ const I18N = {
     closed: "Pickup is currently disabled. Please contact the site admin.",
     dropClosed: "File dropping is turned off.",
     err: {
-      bad_code: "That is not a valid code: expect 8 letters or digits.",
+      bad_code: "That code does not look right: expect 6 digits.",
       unknown: "Invalid code, or it has expired / already been taken.",
       too_many: "Too many attempts. Please wait a moment.",
       banned: "Your access has been blocked by this site.",
@@ -229,17 +229,31 @@ function applyI18n() {
 }
 
 const norm = (v) => String(v || "").toLowerCase().replace(/[\s\-_]/g, "");
+/** 码的形状由服务端告知（默认 6 位纯数字） */
+let SPEC = { len: 6, group: 3, digits: true };
+function valid(v) {
+  const c = norm(v);
+  if (c.length !== SPEC.len) return null;
+  return SPEC.digits ? (/^\d+$/.test(c) ? c : null) : (/^[a-z0-9]+$/.test(c) ? c : null);
+}
+function applySpec() {
+  const el = $("#code");
+  el.maxLength = SPEC.len + (SPEC.len / SPEC.group - 1);
+  el.inputMode = SPEC.digits ? "numeric" : "latin";
+  el.placeholder = SPEC.digits ? "123-456" : "ab3d-k9fq";
+  syncClaimBtn();
+}
 let STATUS = null;
 let TS_TOKEN = null;
 
 function syncClaimBtn() {
-  $("#claim").disabled = norm($("#code").value).length !== 8 || $("#claim").dataset.busy === "1";
+  $("#claim").disabled = !valid($("#code").value) || $("#claim").dataset.busy === "1";
 }
 
 async function doClaim(auto) {
-  const code = norm($("#code").value);
+  const code = valid($("#code").value);
   const msg = $("#claimMsg");
-  if (code.length !== 8) { setMsg(msg, t("err").bad_code ?? et("bad_code"), "err"); return; }
+  if (!code) { setMsg(msg, et("bad_code"), "err"); return; }
   $("#claim").dataset.busy = "1";
   $("#claim").disabled = true;
   $("#claim").textContent = t("claiming");
@@ -294,6 +308,9 @@ async function boot() {
     }
     STATUS = await r.json();
     renderLimits();
+    if (STATUS.code_style) SPEC = { len: STATUS.code_length || 6, group: STATUS.code_style === "alnum8" ? 4 : 3, digits: STATUS.code_style !== "alnum8" };
+    applySpec();
+    if (STATUS.per_ip_daily_claims > 0) $("#claimHelp").textContent = t("claimHelp") + "（" + (LANG === "zh" ? "每个 IP 每天最多尝试 " : "max ") + STATUS.per_ip_daily_claims + (LANG === "zh" ? " 次" : " tries/IP/day") + "）";
     if (STATUS.turnstile_sitekey && !window.__ts) { window.__ts = true; renderTurnstile(STATUS.turnstile_sitekey); }
   } catch { /* 拿不到状态也让输码取件可用 */ }
 }
@@ -353,9 +370,9 @@ $("#drop").addEventListener("drop", (e) => {
   if (f) upload(f);
 });
 
-const pre = norm(new URLSearchParams(location.search).get("c"));
-if (pre.length === 8) { $("#code").value = pre; }
-boot().then(() => { if (pre.length === 8) doClaim(true); });
+const pre = new URLSearchParams(location.search).get("c");
+if (pre) $("#code").value = pre;
+boot().then(() => { if (pre && valid(pre)) doClaim(true); });
 </script>
 </body>
 </html>
