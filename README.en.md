@@ -57,6 +57,15 @@ instant upload) and `etag` (the storage receipt, used for post-write dedupe). `s
 marks a directory share, in which case `file_id` is the `''` sentinel. `upload_sessions` tracks
 in-flight multipart uploads so stale ones can be aborted.
 
+`shares` additionally holds the pickup group: `pickup_hash` (`HMAC(admin, normalised code)`, behind
+a unique partial index — the plaintext code is never stored), `pickup_cipher` (AES-GCM so the
+console can show the code again), `pickup_claims`, plus `origin` (`'admin'` / `'drop'`) and
+`origin_ip`. An anonymous drop is deliberately just one `files` row (parked in an auto-created
+top-level drop folder) plus one `shares` row with `origin='drop'`, so dedupe, reference counting,
+the recycle bin and the cron all apply for free. Drop rows are excluded from the share list, the
+marketplace, the overview counters and direct-link derivation — otherwise the console would hand
+every drop a `/d/:id` link that bypasses the code.
+
 ## Download pipeline
 
 ```
@@ -106,15 +115,58 @@ root — and files download one by one via `?file=<id>`; expiry, password and th
 to the whole link. Because the marketplace and `/d/:id` direct links are single-file concepts,
 directory shares are excluded from both.
 
+## Pickup codes and anonymous drops
+
+Recipients type a short code instead of keeping a long link — **the code is therefore both the
+address and the credential**, and is treated like a password:
+
+- only `HMAC(admin, normalised code)` plus a decryptable copy for the console are stored; rotating
+  `admin` invalidates every code in flight;
+- 8 characters from an alphabet without `0o1li`, input normalised for case, spaces and dashes
+  (`AB3D-K9FQ` ≡ `ab3dk9fq`); a mistyped code fails the shape check and never reaches D1;
+- three layers of throttling: shape rejection (zero DB cost), 10 attempts/minute/IP, and 5 failures
+  per code before that code stops being looked up at all;
+- every failure renders the same 404, so the endpoint cannot be used to probe whether a code exists.
+
+Quotas live in `settings` and default to what the free plan can absorb:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `pickup_enabled` | on | master switch — **off also revokes every code already handed out** |
+| `pickup_max_upload_mb` | 100 | per file (the Workers body ceiling; drops never use multipart) |
+| `pickup_per_ip_daily_count` | 5 | items per source IP per day (shared behind one NAT) |
+| `pickup_per_ip_daily_mb` | 1024 | bytes per source IP per day |
+| `pickup_total_quota_mb` | 1024 | whole drop area ≈ one tenth of free R2; over it returns 507 and rolls the object back |
+| `pickup_retention_days` | 7 | then the code dies and the cron deletes row and object — no recycle bin |
+
+Two deliberate asymmetries:
+
+- **The drop path skips dedupe.** Sharing one storage object between a stranger's upload and the
+  owner's files binds their deletion lifetimes together, and "you already have this sha256" is an
+  existence oracle — the drop area is supposed to be blind to what else is on the bucket.
+- **Keeping a drop in the console deletes the drop row** (the code dies with it) and leaves only the
+  file; a share nobody knows the URL of and that should not outlive its purpose is a landmine.
+  **Destroy** skips the retention window and removes the object immediately.
+
+`GET /api/pickup/download` runs the exact same gate pipeline as a normal share link
+(`serveShareDownload`): expiry, download cap, monthly traffic, per-IP duplicate rule and auto-ban
+all apply. The pickup code is an extra way in, never a looser set of rules.
+
+> This is a publicly writable door: visitors can park files on your domain and have others download
+> them from it. Either turn on Turnstile (drops then require it) or close the master switch.
+
 ## Recycle bin and scheduled cleanup
 
 Deleting sets `files.deleted_at` instead of destroying anything: objects stay, shares and direct
 links stay (so restoring brings them back), and purge happens after `trash_retention_days`
 (default 7, max 90, 0 disables the bin). Trashed objects still count against storage, so the
 overview reports both total bytes and reclaimable trash bytes. An hourly cron (one of the five the
-free plan allows) revokes expired shares, drops expired direct links, purges expired trash, aborts
-stale multipart uploads and samples objects to report any whose bytes vanished — reporting only.
-The destructive "files with no share reference" sweep stays manual and now merely fills the bin.
+free plan allows) revokes expired shares, drops expired direct links, purges expired trash,
+**deletes expired drops (row and object together, bypassing the bin)**, aborts stale multipart
+uploads and samples objects to report any whose bytes vanished — reporting only.
+The destructive "files with no share reference" sweep stays manual and now merely fills the bin;
+the manual "clean dead shares" action also skips drop rows, because deleting only a drop's share
+would leave its file behind as an invisible but still billed orphan.
 
 ## Content dedupe and instant upload
 
@@ -140,6 +192,9 @@ Verified September 2026 against Cloudflare's own docs:
 | Workers CPU | **10 ms/invocation** | no in-Worker zip packaging, no server-side hashing of large files, batched cron |
 | Workers subrequests | 50/invocation | `CLEANUP_BATCH = 50`, `UPLOAD_REAP_BATCH = 20` (one abort = one subrequest) |
 | Workers cron triggers | 5 | exactly one, hourly |
+| Drop area size | — | `pickup_total_quota_mb` defaults to 1024 MB ≈ one tenth of free R2 |
+| Drop rate (keeps Class A sane) | — | 5 items / 1 GB per IP per day, 6 requests/minute/IP |
+| Drop channel | — | single request only (≤100 MB); multipart would multiply Class A writes per file |
 | D1 queries | 50/invocation | every cleanup step is batched |
 | D1 bound parameters | 100/query | every `IN (...)` is sliced at 50 (soft delete binds a timestamp too) |
 | D1 database size | 500 MB | metadata is tiny; `download_logs` is what grows, and the console can purge it |
@@ -155,4 +210,6 @@ npx wrangler dev    # put admin=... in .dev.vars
 
 Each file in `test/` is a standalone assertion script (no test framework): SigV4 signatures checked
 against an independent `node:crypto` implementation, download-gate ordering, folder-tree parsing and
-migration, every WebDAV method, and admin endpoint edge cases.
+migration, every WebDAV method, admin endpoint edge cases, the ranged-read shape of both storage
+providers, the pickup-code path (normalisation, quotas with rollback, throttle layers, one-shot) and
+the console inbox actions (reveal, keep, destroy).
