@@ -13,6 +13,7 @@ import { applyDisposition, inlineCsp, wantsInline } from "./preview";
 import { escapeLike } from "./market";
 import { deleteObjects, purgeFiles, removeFiles, restoreFiles } from "./trash";
 import { runScheduledCleanup } from "./cron";
+import { formatPickupCode, revealPickupCode } from "./pickup";
 import { CHUNK_MAX, abortUpload, completeUpload, initUpload, partTooLarge, uploadPart } from "./uploads";
 import { claimBySha, dedupeAfterWrite, etagFp, findBySha, normalizeSha } from "./dedupe";
 import {
@@ -989,6 +990,106 @@ export async function handleAdminApi(
     return json({ ok: true, revoked: r.meta.changes ?? 0, skipped: ids.length - (r.meta.changes ?? 0) });
   }
 
+  // ── 投递箱：匿名投递的专用视图（正常文件列表照样看得见它们，因为它们真的占配额） ──
+  if (path === "/api/admin/pickups" && method === "GET") {
+    const sp = new URL(req.url).searchParams;
+    const limit = Math.min(200, Math.max(1, Number(sp.get("limit")) || 100));
+    const offset = Math.max(0, Number(sp.get("offset")) || 0);
+    const { results } = await env.db
+      .prepare(
+        `SELECT sh.id AS share_id, f.id AS file_id, f.name, f.size, f.mime, f.key,
+                sh.created_at, sh.expires_at, sh.origin_ip, sh.download_count, sh.pickup_claims, sh.revoked,
+                CASE WHEN sh.max_downloads = 1 THEN 1 ELSE 0 END AS one_shot
+         FROM shares sh JOIN files f ON f.id = sh.file_id
+         WHERE sh.origin = 'drop' AND f.deleted_at IS NULL
+         ORDER BY sh.created_at DESC LIMIT ?1 OFFSET ?2`
+      )
+      .bind(limit, offset)
+      .all();
+    const totals = await env.db
+      .prepare(
+        `SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS bytes FROM (
+           SELECT DISTINCT f.key, f.size
+           FROM shares sh JOIN files f ON f.id = sh.file_id
+           WHERE sh.origin = 'drop' AND f.deleted_at IS NULL
+         )`
+      )
+      .first<{ c: number; bytes: number }>();
+    return json({
+      drops: results ?? [],
+      total: totals?.c ?? 0,
+      bytes: totals?.bytes ?? 0,
+      quota_bytes: (await getSettings(env)).pickupTotalQuotaBytes,
+      limit,
+      offset,
+    });
+  }
+
+  // 取件码只在管理员点"查看码"时单条解密，不随列表批量下发
+  const pickupCodeMatch = /^\/api\/admin\/pickups\/([^/]+)\/code$/.exec(path);
+  if (pickupCodeMatch && method === "GET") {
+    const id = decodeURIComponent(pickupCodeMatch[1]);
+    const row = await env.db
+      .prepare("SELECT pickup_cipher FROM shares WHERE id = ?1 AND origin = 'drop'")
+      .bind(id)
+      .first<{ pickup_cipher: string | null }>();
+    if (!row) return json({ error: msg(req, "投递不存在", "Drop not found") }, 404);
+    const code = await revealPickupCode(env, row.pickup_cipher);
+    if (!code) return json({ error: msg(req, "口令密钥换过，旧码无法回看（请重新投递）", "Stored code can no longer be decrypted (admin key changed)") }, 409);
+    return json({ ok: true, code: formatPickupCode(code) });
+  }
+
+  // 入库：文件挪出投递箱变成普通文件，投递行连同取件码一起消失
+  if (path === "/api/admin/pickups/promote" && method === "POST") {
+    const body = await readJson<{ ids?: string[]; folder_id?: string | null }>(req);
+    const ids = normalizeIds(body.ids);
+    if (!ids.length) return json({ error: msg(req, "请先选择投件", "No files selected") }, 400);
+    const raw = (body.folder_id ?? "").trim();
+    let folderId: string | null = null;
+    if (raw && raw !== "root") {
+      const fo = await env.db.prepare("SELECT id FROM folders WHERE id = ?1").bind(raw).first();
+      if (!fo) return json({ error: msg(req, "目标文件夹不存在", "Target folder not found") }, 404);
+      folderId = raw;
+    }
+    const ph = ids.map((_, i) => `?${i + 1}`).join(", ");
+    const { results } = await env.db
+      .prepare(
+        `SELECT f.id FROM shares sh JOIN files f ON f.id = sh.file_id
+         WHERE sh.origin = 'drop' AND f.id IN (${ph})`
+      )
+      .bind(...ids)
+      .all<{ id: string }>();
+    const mine = (results ?? []).map((r) => r.id);
+    if (!mine.length) return json({ error: msg(req, "选中的不是投件", "Nothing to promote") }, 404);
+    const ph2 = mine.map((_, i) => `?${i + 1}`).join(", ");
+    await env.db.batch([
+      env.db.prepare(`UPDATE files SET folder_id = ?${mine.length + 1} WHERE id IN (${ph2})`).bind(...mine, folderId),
+      env.db.prepare(`DELETE FROM shares WHERE origin = 'drop' AND file_id IN (${ph2})`).bind(...mine),
+    ]);
+    invalidateFolderTree();
+    return json({ ok: true, promoted: mine.length, folder_id: folderId, code_revoked: true });
+  }
+
+  // 销毁：不等保留期，立刻连行带对象清掉
+  if (path === "/api/admin/pickups/destroy" && method === "POST") {
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = normalizeIds(body.ids);
+    if (!ids.length) return json({ error: msg(req, "请先选择投件", "No files selected") }, 400);
+    const ph = ids.map((_, i) => `?${i + 1}`).join(", ");
+    const { results } = await env.db
+      .prepare(
+        `SELECT f.id FROM shares sh JOIN files f ON f.id = sh.file_id
+         WHERE sh.origin = 'drop' AND f.id IN (${ph})`
+      )
+      .bind(...ids)
+      .all<{ id: string }>();
+    const mine = (results ?? []).map((r) => r.id);
+    if (!mine.length) return json({ error: msg(req, "选中的不是投件", "Nothing to destroy") }, 404);
+    const r = await purgeFiles(env, mine);
+    ctx.waitUntil(deleteObjects(env, r.keys));
+    return json({ ok: true, destroyed: r.purged });
+  }
+
   // ── 编辑市场字段（开关 + 标题 + 描述） ────────────
   const shareMarketMatch = /^\/api\/admin\/shares\/([^/]+)\/market$/.exec(path);
   if (shareMarketMatch && method === "PUT") {
@@ -1456,6 +1557,12 @@ export async function handleAdminApi(
       max_upload_mb: s.maxUploadBytes / 1024 ** 2,
       storage_quota_mb: s.storageQuotaBytes / 1024 ** 2,
       trash_retention_days: s.trashRetentionDays,
+      pickup_enabled: s.pickupEnabled,
+      pickup_max_upload_mb: s.pickupMaxUploadBytes / 1024 ** 2,
+      pickup_total_quota_mb: s.pickupTotalQuotaBytes / 1024 ** 2,
+      pickup_per_ip_daily_count: s.pickupPerIpDailyCount,
+      pickup_per_ip_daily_mb: s.pickupPerIpDailyBytes / 1024 ** 2,
+      pickup_retention_days: s.pickupRetentionDays,
       traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
       max_downloads_per_ip: s.maxDownloadsPerIp,
       count_window_hours: s.countWindowHours,
@@ -1524,6 +1631,18 @@ export async function handleAdminApi(
     // 回收站保留期：0 = 关闭（删除即物理删除）；上限 90 天，因为软删除仍占存储
     const keepDays = num(body.trash_retention_days);
     if (keepDays !== null) patch.trash_retention_days = String(Math.min(90, Math.max(0, Math.floor(keepDays))));
+    // 取件码投递 —— 公网可写的口子，四道配额都必须留在这里可收
+    if (typeof body.pickup_enabled === "boolean") patch.pickup_enabled = body.pickup_enabled ? "1" : "0";
+    const dropMb = num(body.pickup_max_upload_mb);
+    if (dropMb !== null) patch.pickup_max_upload_mb = String(Math.min(100, Math.max(0, Math.floor(dropMb))));
+    const dropTotalMb = num(body.pickup_total_quota_mb);
+    if (dropTotalMb !== null) patch.pickup_total_quota_mb = String(Math.floor(dropTotalMb));
+    const dropPerIp = num(body.pickup_per_ip_daily_count);
+    if (dropPerIp !== null) patch.pickup_per_ip_daily_count = String(Math.floor(dropPerIp));
+    const dropPerIpMb = num(body.pickup_per_ip_daily_mb);
+    if (dropPerIpMb !== null) patch.pickup_per_ip_daily_mb = String(Math.floor(dropPerIpMb));
+    const dropDays = num(body.pickup_retention_days);
+    if (dropDays !== null) patch.pickup_retention_days = String(Math.min(90, Math.max(1, Math.floor(dropDays))));
     const perIp = num(body.max_downloads_per_ip);
     if (perIp !== null) patch.max_downloads_per_ip = String(Math.floor(perIp));
     const window = num(body.count_window_hours);

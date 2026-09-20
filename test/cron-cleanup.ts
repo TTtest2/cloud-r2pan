@@ -22,7 +22,7 @@ function check(name: string, cond: boolean, detail?: string) {
   }
 }
 
-interface Share { id: string; file_id: string; revoked: number; expires_at: number | null }
+interface Share { id: string; file_id: string; revoked: number; expires_at: number | null; origin?: string }
 interface Link { id: string; file_id: string; expires_at: number | null }
 interface FileRow { id: string; key: string; deleted_at: number | null }
 
@@ -119,6 +119,16 @@ class Db {
       return null;
     }
     if (/^DELETE FROM (shares|download_logs|direct_links) WHERE file_id IN/.test(sql)) return null;
+    // 到期投递：按分享行的 origin 找出要连对象一起清掉的文件
+    if (/^SELECT f\.id FROM shares sh JOIN files f ON f\.id = sh\.file_id WHERE sh\.origin = 'drop'/.test(sql)) {
+      const cutoff = Number(binds[0]);
+      const limit = Number(binds[1]);
+      this.seenLimits.push(limit);
+      return this.shares
+        .filter((s) => s.origin === "drop" && s.expires_at !== null && s.expires_at < cutoff)
+        .slice(0, limit)
+        .map((s) => ({ id: s.file_id }));
+    }
     if (/^SELECT id, key, upload_id, name, mime, folder_id, size_declared, sha256, created_at FROM upload_sessions WHERE created_at < \?1/.test(sql)) {
       const cutoff = Number(binds[0]);
       this.seenLimits.push(Number(binds[1]));
@@ -221,9 +231,11 @@ async function main() {
     invalidateSettingsCache();
     const h = env(now);
     await runScheduledCleanup(h.env, now);
-    const batched = h.db.sqlLog.filter((s) => /^SELECT id FROM (shares|direct_links)/.test(s) || /deleted_at < \?1 ORDER BY deleted_at/.test(s));
-    check("三类扫描都带 LIMIT", batched.length >= 3 && batched.every((s) => /LIMIT \?\d/.test(s)), JSON.stringify(batched));
-    const want = [CLEANUP_BATCH, CLEANUP_BATCH, CLEANUP_BATCH, UPLOAD_REAP_BATCH, PROBE_SAMPLE];
+    const batched = h.db.sqlLog.filter(
+      (s) => /^SELECT id FROM (shares|direct_links)/.test(s) || /deleted_at < \?1 ORDER BY deleted_at/.test(s) || /sh\.origin = 'drop'/.test(s)
+    );
+    check("四类扫描都带 LIMIT", batched.length >= 4 && batched.every((s) => /LIMIT \?\d/.test(s)), JSON.stringify(batched));
+    const want = [CLEANUP_BATCH, CLEANUP_BATCH, CLEANUP_BATCH, CLEANUP_BATCH, UPLOAD_REAP_BATCH, PROBE_SAMPLE];
     check("每步的分批量都在免费档预算内", JSON.stringify(h.db.seenLimits) === JSON.stringify(want), JSON.stringify(h.db.seenLimits));
     check("cron 不扫孤儿文件", !h.db.sqlLog.some((s) => /LEFT JOIN shares s ON s\.file_id = f\.id/.test(s)), s0(h.db.sqlLog));
     check("cron 不物理删活文件行", h.db.purgedFileIds.every((id) => ["told"].includes(id)), JSON.stringify(h.db.purgedFileIds));
@@ -260,6 +272,26 @@ async function main() {
     check("没完成的分片被 abort", h.deletedKeys.includes("abort:files/u-old"), JSON.stringify(h.deletedKeys));
     check("还在传的那条不动", h.db.sessions.some((s) => s.id === "u-new"));
     check("abort 不会顺手删掉对象本身", !h.deletedKeys.includes("files/u-new") && !h.deletedKeys.includes("files/fx"), JSON.stringify(h.deletedKeys));
+  }
+
+  console.log("\n[7] 到期投递连对象一起清");
+  {
+    const now = Date.now();
+    invalidateSettingsCache();
+    const h = env(now);
+    h.db.shares.push(
+      { id: "dp-dead", file_id: "fdead", revoked: 0, expires_at: now - 1000, origin: "drop" },
+      { id: "dp-alive", file_id: "falive", revoked: 0, expires_at: now + 3600_000, origin: "drop" }
+    );
+    h.db.files.push({ id: "fdead", key: "drops/fdead", deleted_at: null }, { id: "falive", key: "drops/falive", deleted_at: null });
+    const limitsBefore = h.db.seenLimits.length;
+    const report = await runScheduledCleanup(h.env, now);
+    check("到期投件被彻底清除", report.drops_purged === 1 && !h.db.files.some((f) => f.id === "fdead"), JSON.stringify(report));
+    check("到期投件的对象真的删了", h.deletedKeys.includes("drops/fdead"), JSON.stringify(h.deletedKeys));
+    check("还在保留期内的投件不动", h.db.files.some((f) => f.id === "falive") && !h.deletedKeys.includes("drops/falive"), JSON.stringify(h.deletedKeys));
+    check("普通过期分享只撤销、绝不被这步删掉", h.db.shares.some((s) => s.id === "sx" && s.revoked === 1) && h.db.files.some((f) => f.id !== "fdead" && f.deleted_at === null));
+    const step = h.db.sqlLog.find((s) => /sh\.origin = 'drop'/.test(s)) ?? "";
+    check("这一步同样带 LIMIT（分批纪律）", /LIMIT \?2/.test(step) && h.db.seenLimits.slice(limitsBefore).includes(50), step.slice(0, 60));
   }
 
   console.log(`\n${failures === 0 ? "\x1b[32m全部通过\x1b[0m" : `\x1b[31m${failures} 项失败\x1b[0m`}\n`);

@@ -35,6 +35,8 @@ export interface CleanupReport {
   shares_revoked: number;
   links_deleted: number;
   trash_purged: number;
+  /** 到期投递：连行带对象一起清掉 */
+  drops_purged: number;
   objects_deleted: number;
   uploads_aborted: number;
   /** 抽查中发现"行还在、对象没了"的文件 id —— 只报告，不擅自处置 */
@@ -108,6 +110,28 @@ async function probeObjects(env: Env): Promise<string[]> {
   return missing;
 }
 
+/**
+ * 到期投递：连行带对象一起清。
+ *
+ * 投递不套用回收站语义 —— 没人"删除"过它，机主也不该在回收站里翻陌生人投的
+ * 东西；保留期一过它就纯粹在烧 R2 配额。上面那步 revokeExpiredShares 已经把码
+ * 掐断（取不到），这里只负责把字节真正拿走。
+ */
+async function purgeExpiredDrops(env: Env, now: number): Promise<{ purged: number; keys: string[] }> {
+  const { results } = await env.db
+    .prepare(
+      `SELECT f.id FROM shares sh JOIN files f ON f.id = sh.file_id
+       WHERE sh.origin = 'drop' AND sh.expires_at IS NOT NULL AND sh.expires_at < ?1
+       ORDER BY sh.expires_at LIMIT ?2`
+    )
+    .bind(now, CLEANUP_BATCH)
+    .all<{ id: string }>();
+  const ids = (results ?? []).map((r) => r.id);
+  if (!ids.length) return { purged: 0, keys: [] };
+  const r = await purgeFiles(env, ids);
+  return { purged: r.purged, keys: r.keys };
+}
+
 /** 一轮定时清理；cron 与后台"立即运行"按钮共用同一个入口 */
 export async function runScheduledCleanup(env: Env, now = Date.now()): Promise<CleanupReport> {
   const s = await getSettings(env);
@@ -115,6 +139,7 @@ export async function runScheduledCleanup(env: Env, now = Date.now()): Promise<C
     shares_revoked: 0,
     links_deleted: 0,
     trash_purged: 0,
+    drops_purged: 0,
     objects_deleted: 0,
     uploads_aborted: 0,
     missing_objects: [],
@@ -127,9 +152,14 @@ export async function runScheduledCleanup(env: Env, now = Date.now()): Promise<C
   if (due.length) {
     const r = await purgeFiles(env, due);
     report.trash_purged = r.purged;
-    report.objects_deleted = r.keys.length;
+    report.objects_deleted += r.keys.length;
     await deleteObjects(env, r.keys);
   }
+
+  const drops = await purgeExpiredDrops(env, now);
+  report.drops_purged = drops.purged;
+  report.objects_deleted += drops.keys.length;
+  await deleteObjects(env, drops.keys);
 
   // 分片上传半途而废 = 零散 part 一直占存储，超时一律中止
   const stale = await staleUploadIds(env, now, UPLOAD_REAP_BATCH);
